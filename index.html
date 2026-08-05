@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Marginalia — a local-first notebook</title>
+<meta name="description" content="A privacy-first, offline-capable notes app that lives on GitHub Pages." />
+<meta name="theme-color" content="#eceee6" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#14170f" media="(prefers-color-scheme: dark)" />
+
+<!-- NFR-03: no third-party analytics; only pinned CDN font/markdown assets allowed. -->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'self';
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  font-src https://fonts.gstatic.com;
+  script-src 'self' https://cdn.jsdelivr.net;
+  img-src 'self' data: https:;
+  connect-src 'self' https://api.github.com https://fonts.googleapis.com https://fonts.gstatic.com https://*.peerjs.com wss://*.peerjs.com stun: turn:;
+" />
+
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+<link rel="stylesheet" href="css/styles.css" />
+</head>
+<body data-theme="light">
+
+<div class="app" id="app">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="pane sidebar mobile-visible" id="pane-sidebar">
+    <div class="brand">
+      <span class="brand__mark" aria-hidden="true"></span>
+      <span class="brand__title">Marginalia</span>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section__label">Library</div>
+      <button class="nav-item active" data-view="all">
+        <span>All notes</span><span class="nav-item__count" id="count-all">0</span>
+      </button>
+      <button class="nav-item" data-view="pinned">
+        <span>Pinned</span><span class="nav-item__count" id="count-pinned">0</span>
+      </button>
+      <button class="nav-item" data-view="archived">
+        <span>Archived</span><span class="nav-item__count" id="count-archived">0</span>
+      </button>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section__label" style="display:flex; justify-content:space-between; align-items:center;">
+        <span>Folders</span>
+        <button class="folder-row__add" id="btn-add-folder" title="New folder" aria-label="New folder">+</button>
+      </div>
+      <div class="folder-tree" id="folder-tree"></div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section__label">Tags</div>
+      <div id="tag-cloud"></div>
+    </div>
+
+    <div class="sidebar-footer">
+      <button class="text-btn" id="btn-github">
+        <span aria-hidden="true">⇅</span> GitHub sync
+      </button>
+      <button class="text-btn" id="btn-share">
+        <span aria-hidden="true">📡</span> Share on Wi-Fi
+      </button>
+      <button class="text-btn" id="btn-export">
+        <span aria-hidden="true">↓</span> Export notes (JSON)
+      </button>
+      <button class="text-btn" id="btn-import">
+        <span aria-hidden="true">↑</span> Import notes
+      </button>
+      <input type="file" id="import-file" accept=".json" hidden />
+      <button class="text-btn" id="btn-theme">
+        <span aria-hidden="true">◐</span> <span id="theme-label">Theme: System</span>
+      </button>
+      <div class="text-btn" style="cursor:default;">
+        <span class="status-dot online" id="status-dot"></span>
+        <span id="status-label">Online</span>
+      </div>
+      <div class="text-btn" style="cursor:default; display:none;" id="peer-status-row">
+        <span class="status-dot" id="peer-status-dot"></span>
+        <span id="peer-status-label">No peer</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ NOTE LIST ============ -->
+  <section class="pane note-list-pane" id="pane-list">
+    <div class="note-list-header">
+      <div class="search-box">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="search-input" placeholder="Search notes…" aria-label="Search notes" />
+      </div>
+      <div class="list-header-row">
+        <span class="list-title" id="list-title">All notes</span>
+        <button class="new-note-btn" id="btn-new-note">+ New</button>
+      </div>
+    </div>
+    <div class="note-list" id="note-list"></div>
+  </section>
+
+  <!-- ============ EDITOR ============ -->
+  <section class="pane editor-pane" id="pane-editor">
+    <div id="editor-empty" class="editor-placeholder">
+      <span class="editor-placeholder__mark" aria-hidden="true"></span>
+      <div>Select a note, or start a new one.</div>
+    </div>
+
+    <div id="editor-content" style="display:none; flex:1; min-height:0; display:flex; flex-direction:column;">
+      <div class="editor-toolbar">
+        <button class="icon-btn" id="btn-pin" title="Pin note" aria-label="Pin note">📌</button>
+        <button class="icon-btn" id="btn-archive" title="Archive note" aria-label="Archive note">🗄</button>
+        <button class="icon-btn" id="btn-preview" title="Toggle preview" aria-label="Toggle preview">◧</button>
+        <div class="editor-toolbar__spacer"></div>
+        <span class="sync-status-line" id="autosave-label" style="background:none; padding:0;"></span>
+        <button class="icon-btn" id="btn-export-single" title="Export as .md" aria-label="Export note as markdown">↓</button>
+        <button class="icon-btn danger" id="btn-delete" title="Delete note" aria-label="Delete note">🗑</button>
+      </div>
+      <div class="editor-body">
+        <input type="text" class="title-input" id="note-title" placeholder="Untitled note" />
+        <div class="editor-meta-row" id="note-meta"></div>
+        <div class="tag-input-row" id="tag-row">
+          <input type="text" class="tag-input" id="tag-input" placeholder="+ add tag" />
+        </div>
+        <div class="content-area" id="content-area">
+          <textarea class="content-textarea" id="note-content" placeholder="Start writing in Markdown…"></textarea>
+          <div class="content-preview" id="note-preview" style="display:none;"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ MOBILE TABS ============ -->
+  <nav class="mobile-tabs">
+    <button data-tab="sidebar" class="active">📚<span>Library</span></button>
+    <button data-tab="list">📇<span>Notes</span></button>
+    <button data-tab="editor">✎<span>Write</span></button>
+  </nav>
+
+</div>
+
+<div class="toast-container" id="toast-container"></div>
+
+<!-- ============ MODALS (templates, populated by app.js) ============ -->
+<div id="modal-root"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js" defer></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
