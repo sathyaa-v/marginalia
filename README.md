@@ -77,11 +77,18 @@ read and write the same repository, effectively syncing your notes across
 them — push from one, pull-and-reset on the other. The token never leaves
 your browser except to talk to `api.github.com`.
 
-**Known limitation:** pulled notes currently land unfiled (not reassigned
-to a folder matching their repo directory) — folder reconstruction on pull
-isn't implemented yet. Conflict handling is last-write-wins only; there's
-no merge UI, so if you edit the same note on two devices before syncing,
-whichever side pushes or pulls last wins.
+**Folders sync too.** Push writes each note under its folder's directory
+in the repo (`notes/work/sub-project/...`) *and* records the folder's
+real name/path in front-matter (`folder: "Work/Sub Project"`), so casing
+and spacing survive round-trips even though the directory name itself is
+slugified. Pull rebuilds the folder hierarchy locally from that field —
+new folders are created as needed, matching names are reused, and each
+note is filed into the right one. (Files added to the repo by hand, with
+no `folder:` field, fall back to whatever directory they're sitting in.)
+
+Conflict handling is last-write-wins only; there's no merge UI, so if you
+edit the same note on two devices before syncing, whichever side pushes
+or pulls last wins.
 
 ### Automatic sync check on load
 
@@ -121,8 +128,6 @@ will block it — use Offline mode there, or accept it may not connect.
 
 - **Markdown ZIP export/import with folder structure** (Phase 4) is on
   the roadmap in `NOTES-APP-REQUIREMENTS.md` but not implemented.
-- Pull doesn't reconstruct folder assignment from the repo's directory
-  structure yet — pulled notes land unfiled.
 - Conflict handling is last-write-wins only — there's no merge UI.
 - Wi-Fi sharing is view-only; there's no collaborative editing (out of
   scope per the spec, FR-47).
