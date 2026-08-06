@@ -12,6 +12,7 @@ const SHELL_FILES = [
   './js/search.js',
   './js/github.js',
   './js/webrtc.js',
+  './js/editor-helpers.js',
   './icons/icon.svg',
 ];
 

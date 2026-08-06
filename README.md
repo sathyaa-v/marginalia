@@ -14,6 +14,31 @@ account. Clone it, turn on GitHub Pages, and it's yours.
 4. Optional: tap **Install** in your browser's address bar (or "Add to Home
    Screen" on mobile) to use it like a native app, offline.
 
+## Editor improvements (behavior only — same textarea + preview layout)
+
+- **Sanitized preview.** Rendered Markdown now goes through DOMPurify
+  before hitting the page. Previously `marked.parse()` output went
+  straight into `innerHTML`, which meant a note containing malicious HTML
+  — typed, JSON-imported, or pulled from a repo — could execute in the
+  preview pane. Worth pulling if you ever remove the DOMPurify script tag.
+- **Syntax highlighting** in fenced code blocks (highlight.js), themed to
+  match the app's existing palette rather than a stock theme.
+- **Tab / Shift+Tab** indent and outdent the current line (or selected
+  lines) by two spaces, instead of moving focus out of the editor.
+- **Enter inside a list** continues the `-`/`1.`/`- [ ]` marker on the next
+  line; pressing Enter again on an empty item removes the marker and exits
+  the list.
+- **Formatting shortcuts**, active while the editor has focus:
+  `Cmd/Ctrl+B` bold, `Cmd/Ctrl+I` italic, `Cmd/Ctrl+E` inline code,
+  `Cmd/Ctrl+K` insert link, `Cmd/Ctrl+Shift+C` fenced code block. Each
+  toggles off if the selection is already wrapped.
+- **Smart paste** — pasting a URL over a text selection wraps the
+  selection as a markdown link instead of overwriting it with the raw URL.
+- **Auto-pairing** — typing `(`, `[`, `{`, `"`, `'`, or `` ` `` while text
+  is selected wraps the selection instead of replacing it.
+- **Word count / reading time** now show in the existing metadata line
+  under the title.
+
 ## What works today (Phase 1)
 
 - Create, edit, pin, archive, and soft-delete notes
