@@ -58,6 +58,17 @@ isn't implemented yet. Conflict handling is last-write-wins only; there's
 no merge UI, so if you edit the same note on two devices before syncing,
 whichever side pushes or pulls last wins.
 
+### Automatic sync check on load
+
+Once a PAT is configured, every time the app loads it makes one lightweight
+API call (the latest commit touching the notes path — no file contents)
+and compares that timestamp against your newest local note. If they
+disagree by more than a few seconds, a banner appears at the top with
+**Push** and **Pull** buttons (whichever direction looks right is
+highlighted) so you can resolve it without opening Settings. A bad token,
+being offline, or a rate limit just fails silently here — real errors
+still surface when you use the GitHub sync modal directly.
+
 ## Share on Wi-Fi (Phase 3, included)
 
 Open **Share on Wi-Fi** in the sidebar, pick **Host** on one device and
