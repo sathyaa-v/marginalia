@@ -35,6 +35,7 @@ async function boot() {
   window.addEventListener('offline', updateOnlineStatus);
   updateOnlineStatus();
   maybeShowExportReminder();
+  checkGitHubSyncStatus();
 }
 
 async function requestPersistence() {
@@ -509,6 +510,168 @@ async function maybeShowExportReminder() {
 }
 
 // ---------------------------------------------------------------------
+// GitHub push/pull — shared logic used by both the modal and the
+// homepage sync banner, so there's one code path either way.
+// ---------------------------------------------------------------------
+function getSavedGitHubConfig() {
+  try {
+    const cfg = JSON.parse(localStorage.getItem('githubConfig') || '{}');
+    return cfg.token && cfg.owner && cfg.repo ? cfg : null;
+  } catch {
+    return null;
+  }
+}
+
+async function pushToGitHub(cfg) {
+  try {
+    const sync = new GitHubSync(cfg);
+    const notes = activeNotes();
+    // Every githubPath this client has ever seen for this repo — including
+    // for notes since soft-deleted — so the push can also delete stale
+    // files instead of only ever adding/updating (a true mirror push).
+    const allKnownNotes = await db.getAll('notes');
+    const previousPaths = new Set(allKnownNotes.filter((n) => n.githubPath).map((n) => n.githubPath));
+
+    const result = await sync.saveNotes(notes, state.folders, { previousPaths });
+    await db.bulkPut('notes', notes);
+
+    const deletedNotes = allKnownNotes.filter((n) => n.deleted && n.githubPath && !notes.some((x) => x.id === n.id));
+    for (const dn of deletedNotes) await db.delete('notes', dn.id);
+    state.notes = await db.getAll('notes');
+    renderAll();
+
+    return {
+      ok: true,
+      message: `Pushed ${result.notesUpdated} note(s)${result.notesDeleted ? `, removed ${result.notesDeleted} stale file(s)` : ''}.`,
+    };
+  } catch (err) {
+    return { ok: false, message: err.message };
+  }
+}
+
+async function pullAndResetFromGitHub(cfg) {
+  try {
+    const sync = new GitHubSync(cfg);
+    const remoteNotes = await sync.pullNotes();
+    const toSave = remoteNotes.map((rn) => ({
+      id: uuid(),
+      title: rn.title,
+      content: rn.content,
+      folderId: null,
+      tags: rn.tags,
+      pinned: rn.pinned,
+      archived: false,
+      deleted: false,
+      createdAt: rn.createdAt || nowISO(),
+      updatedAt: rn.updatedAt || nowISO(),
+      githubPath: rn.githubPath,
+      githubSha: rn.githubSha,
+    }));
+
+    // Full reset, not a merge/append — repeated pulls are idempotent.
+    await db.clear('notes');
+    await db.bulkPut('notes', toSave);
+    state.notes = await db.getAll('notes');
+    state.selectedNoteId = null;
+    renderAll();
+
+    return { ok: true, message: `Pulled ${toSave.length} note(s). Local notes were reset to match the repo.` };
+  } catch (err) {
+    return { ok: false, message: err.message };
+  }
+}
+
+function localLatestUpdatedAt() {
+  const list = activeNotes();
+  if (list.length === 0) return null;
+  return list.reduce((max, n) => (new Date(n.updatedAt) > new Date(max) ? n.updatedAt : max), list[0].updatedAt);
+}
+
+// ---------------------------------------------------------------------
+// Homepage sync-status banner — checked once, automatically, on load.
+// ---------------------------------------------------------------------
+async function checkGitHubSyncStatus() {
+  const cfg = getSavedGitHubConfig();
+  if (!cfg) return; // no PAT configured yet — nothing to check
+  try {
+    const sync = new GitHubSync(cfg);
+    const remoteLatest = await sync.getLatestRemoteChangeTime();
+    const localLatest = localLatestUpdatedAt();
+    showSyncBannerIfNeeded(localLatest, remoteLatest);
+  } catch {
+    // Silent — a bad token, offline state, or rate limit shouldn't block
+    // the homepage. The GitHub sync modal will surface real errors when
+    // the person actually tries to use it.
+  }
+}
+
+function showSyncBannerIfNeeded(localLatest, remoteLatest) {
+  const banner = document.getElementById('sync-banner');
+  const text = document.getElementById('sync-banner-text');
+  const TOLERANCE_MS = 3000; // avoid false positives from clock/rounding noise
+
+  if (!localLatest && !remoteLatest) {
+    banner.style.display = 'none';
+    return;
+  }
+
+  const localMs = localLatest ? new Date(localLatest).getTime() : 0;
+  const remoteMs = remoteLatest ? new Date(remoteLatest).getTime() : 0;
+
+  if (Math.abs(localMs - remoteMs) <= TOLERANCE_MS) {
+    banner.style.display = 'none';
+    return;
+  }
+
+  let message, suggested;
+  if (!remoteLatest) {
+    message = 'These notes haven\u2019t been pushed to GitHub yet.';
+    suggested = 'push';
+  } else if (!localLatest) {
+    message = 'GitHub has notes that aren\u2019t on this device.';
+    suggested = 'pull';
+  } else if (localMs > remoteMs) {
+    message = `Local notes are newer than GitHub (updated ${relativeTime(localLatest)}).`;
+    suggested = 'push';
+  } else {
+    message = `GitHub has newer changes than this device (updated ${relativeTime(remoteLatest)}).`;
+    suggested = 'pull';
+  }
+
+  text.textContent = message;
+  banner.style.display = 'flex';
+  document.getElementById('sync-banner-push').classList.toggle('btn-primary', suggested === 'push');
+  document.getElementById('sync-banner-pull').classList.toggle('btn-primary', suggested === 'pull');
+}
+
+function hideSyncBanner() {
+  document.getElementById('sync-banner').style.display = 'none';
+}
+
+function wireSyncBanner() {
+  document.getElementById('sync-banner-push').addEventListener('click', async () => {
+    const cfg = getSavedGitHubConfig();
+    if (!cfg) return;
+    toast('Pushing to GitHub…');
+    const result = await pushToGitHub(cfg);
+    toast(result.message, !result.ok);
+    if (result.ok) hideSyncBanner();
+  });
+
+  document.getElementById('sync-banner-pull').addEventListener('click', async () => {
+    const cfg = getSavedGitHubConfig();
+    if (!cfg) return;
+    if (!confirm('This replaces all local notes with what\u2019s in GitHub. Continue?')) return;
+    toast('Pulling from GitHub…');
+    const result = await pullAndResetFromGitHub(cfg);
+    toast(result.message, !result.ok);
+    if (result.ok) hideSyncBanner();
+  });
+
+  document.getElementById('sync-banner-dismiss').addEventListener('click', hideSyncBanner);
+}
+
+// ---------------------------------------------------------------------
 // GitHub sync modal
 // ---------------------------------------------------------------------
 function openGitHubModal() {
@@ -596,32 +759,9 @@ function openGitHubModal() {
     }
     persistConfig(cfg);
     setStatus('Committing to GitHub…');
-    try {
-      const sync = new GitHubSync(cfg);
-      const notes = activeNotes();
-      // Every githubPath this client has ever seen for this repo — including
-      // for notes since soft-deleted — so the push can also delete stale
-      // files instead of only ever adding/updating (a true mirror push).
-      const allKnownNotes = await db.getAll('notes');
-      const previousPaths = new Set(allKnownNotes.filter((n) => n.githubPath).map((n) => n.githubPath));
-
-      const result = await sync.saveNotes(notes, state.folders, { previousPaths });
-      await db.bulkPut('notes', notes);
-
-      // Soft-deleted notes whose file just got removed from the repo can
-      // now be purged locally too — the sync round-trip is complete for them.
-      const deletedNotes = allKnownNotes.filter((n) => n.deleted && n.githubPath && !notes.some((x) => x.id === n.id));
-      for (const dn of deletedNotes) {
-        await db.delete('notes', dn.id);
-      }
-      state.notes = await db.getAll('notes');
-
-      setStatus(`Pushed ${result.notesUpdated} note(s)${result.notesDeleted ? `, removed ${result.notesDeleted} stale file(s)` : ''}.`, 'success');
-      toast('Pushed to GitHub');
-      renderAll();
-    } catch (err) {
-      setStatus(err.message, 'error');
-    }
+    const result = await pushToGitHub(cfg);
+    setStatus(result.message, result.ok ? 'success' : 'error');
+    if (result.ok) { toast('Pushed to GitHub'); hideSyncBanner(); }
   });
 
   let pullConfirmed = false;
@@ -642,41 +782,11 @@ function openGitHubModal() {
     }
 
     setStatus('Pulling from GitHub…');
-    try {
-      const sync = new GitHubSync(cfg);
-      const remoteNotes = await sync.pullNotes();
-      const toSave = remoteNotes.map((rn) => ({
-        id: uuid(),
-        title: rn.title,
-        content: rn.content,
-        folderId: null,
-        tags: rn.tags,
-        pinned: rn.pinned,
-        archived: false,
-        deleted: false,
-        createdAt: rn.createdAt || nowISO(),
-        updatedAt: rn.updatedAt || nowISO(),
-        githubPath: rn.githubPath,
-        githubSha: rn.githubSha,
-      }));
-
-      // Full reset, not a merge/append: local notes are replaced wholesale
-      // by what's in the repo, so repeated pulls are idempotent instead of
-      // accumulating duplicates.
-      await db.clear('notes');
-      await db.bulkPut('notes', toSave);
-      state.notes = await db.getAll('notes');
-      state.selectedNoteId = null;
-
-      setStatus(`Pulled ${toSave.length} note(s). Local notes were reset to match the repo.`, 'success');
-      toast('Local notes reset from GitHub');
-      renderAll();
-    } catch (err) {
-      setStatus(err.message, 'error');
-    } finally {
-      pullConfirmed = false;
-      pullBtn.textContent = 'Pull & reset local notes';
-    }
+    const result = await pullAndResetFromGitHub(cfg);
+    setStatus(result.message, result.ok ? 'success' : 'error');
+    if (result.ok) { toast('Local notes reset from GitHub'); hideSyncBanner(); }
+    pullConfirmed = false;
+    pullBtn.textContent = 'Pull & reset local notes';
   });
 }
 
@@ -1004,6 +1114,7 @@ function wireGlobalEvents() {
   document.getElementById('btn-github').addEventListener('click', openGitHubModal);
   document.getElementById('btn-share').addEventListener('click', openShareModal);
   window.addEventListener('beforeunload', () => { if (shareSession) shareSession.close(); });
+  wireSyncBanner();
 
   document.querySelectorAll('.mobile-tabs button').forEach((btn) => {
     btn.addEventListener('click', () => {

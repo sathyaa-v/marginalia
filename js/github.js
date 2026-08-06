@@ -102,6 +102,24 @@ export class GitHubSync {
   }
 
   /**
+   * Cheap check for "has anything changed on GitHub" — the date of the
+   * most recent commit that touched basePath, without pulling any file
+   * contents. Used for the on-load sync-status banner.
+   */
+  async getLatestRemoteChangeTime() {
+    const res = await fetch(
+      `${API}/repos/${this.owner}/${this.repo}/commits?path=${encodeURIComponent(this.basePath)}&per_page=1`,
+      { headers: this.headers() }
+    );
+    if (res.status === 404 || res.status === 409) return null; // repo/path has no commits yet
+    if (!res.ok) throw new Error(`Commit lookup failed: ${await this._err(res)}`);
+    const commits = await res.json();
+    if (!Array.isArray(commits) || commits.length === 0) return null;
+    const c = commits[0];
+    return c.commit?.committer?.date || c.commit?.author?.date || null;
+  }
+
+  /**
    * Atomic multi-file commit via the Git Data API. This is a MIRROR push:
    * any previously-synced path that no longer corresponds to a currently
    * pushed note (deleted locally, or renamed so its slug/path changed) is
