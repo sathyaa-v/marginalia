@@ -36,10 +36,27 @@ Open **GitHub sync** in the sidebar and provide:
 - The repo owner, repo name, and the path notes should live under
   (defaults to `notes/`).
 
-**Save to GitHub** commits every note as a Markdown file with front-matter
-in a single atomic commit (via the Git Data API — not one request per
-file). **Pull from GitHub** reads that folder back in. The token never
-leaves your browser except to talk to `api.github.com`.
+**Push (overwrite repo)** commits every active note as a Markdown file with
+front-matter in a single atomic commit (via the Git Data API — not one
+request per file), and **mirrors** your local notes: any file in the repo
+that no longer matches a local note (because you deleted it, or renamed it
+so its slug changed) is removed from the repo too, not just left behind.
+
+**Pull & reset local notes** replaces your local notes wholesale with
+whatever's currently in the repo — it's a reset, not a merge, so pulling
+twice in a row doesn't create duplicates. Because it discards anything
+local you haven't pushed yet, it asks you to click twice to confirm.
+
+Using the same PAT + owner/repo/path on a second browser or device lets it
+read and write the same repository, effectively syncing your notes across
+them — push from one, pull-and-reset on the other. The token never leaves
+your browser except to talk to `api.github.com`.
+
+**Known limitation:** pulled notes currently land unfiled (not reassigned
+to a folder matching their repo directory) — folder reconstruction on pull
+isn't implemented yet. Conflict handling is last-write-wins only; there's
+no merge UI, so if you edit the same note on two devices before syncing,
+whichever side pushes or pulls last wins.
 
 ## Share on Wi-Fi (Phase 3, included)
 
@@ -55,10 +72,9 @@ Open **Share on Wi-Fi** in the sidebar, pick **Host** on one device and
   joiner generates a reply code you copy back. Clunkier, but genuinely
   nothing leaves the LAN.
 
-The joining device sees a read-only snapshot of the host's current notes.
-It's intentionally view-only and never writes anything into its own
-storage — there's no merge or write-back in this version. Sessions are
-ephemeral and close when you close the dialog or the tab.
+The joining device sees a read-only snapshot of the host's current notes,
+and can copy an individual note into its own local library with **Import
+to my notes** — that's a one-time copy, not live sync back to the host.
 
 Note: PeerJS mode depends on that free signaling service being reachable
 and on your network allowing the resulting WebRTC connection through. Most
@@ -69,8 +85,9 @@ will block it — use Offline mode there, or accept it may not connect.
 
 - **Markdown ZIP export/import with folder structure** (Phase 4) is on
   the roadmap in `NOTES-APP-REQUIREMENTS.md` but not implemented.
-- Conflict handling is last-write-wins only — there's no merge UI. If you
-  edit the same note from two devices before syncing, the later save wins.
+- Pull doesn't reconstruct folder assignment from the repo's directory
+  structure yet — pulled notes land unfiled.
+- Conflict handling is last-write-wins only — there's no merge UI.
 - Wi-Fi sharing is view-only; there's no collaborative editing (out of
   scope per the spec, FR-47).
 
