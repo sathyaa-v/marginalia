@@ -524,6 +524,13 @@ function openGitHubModal() {
         (Contents: Read &amp; Write, Metadata: Read). The token is stored only
         in this browser and sent only to api.github.com.
       </div>
+      <div class="honesty-note">
+        <strong>Push</strong> mirrors this device's notes into the repo —
+        it also deletes files there that no longer match a local note.
+        <strong>Pull</strong> replaces your local notes with whatever's in
+        the repo; it will ask you to confirm since it discards anything
+        local that hasn't been pushed yet.
+      </div>
       <div class="field">
         <label for="gh-token">Personal Access Token</label>
         <input type="password" id="gh-token" value="${escapeHtml(saved.token || '')}" placeholder="github_pat_…" />
@@ -544,8 +551,8 @@ function openGitHubModal() {
     </div>
     <div class="modal__footer">
       <button class="btn" id="gh-test">Test connection</button>
-      <button class="btn" id="gh-pull">Pull from GitHub</button>
-      <button class="btn btn-primary" id="gh-save">Save to GitHub</button>
+      <button class="btn btn-danger" id="gh-pull">Pull &amp; reset local notes</button>
+      <button class="btn btn-primary" id="gh-save">Push (overwrite repo)</button>
     </div>
   `);
 
@@ -592,22 +599,48 @@ function openGitHubModal() {
     try {
       const sync = new GitHubSync(cfg);
       const notes = activeNotes();
-      const result = await sync.saveNotes(notes, state.folders);
+      // Every githubPath this client has ever seen for this repo — including
+      // for notes since soft-deleted — so the push can also delete stale
+      // files instead of only ever adding/updating (a true mirror push).
+      const allKnownNotes = await db.getAll('notes');
+      const previousPaths = new Set(allKnownNotes.filter((n) => n.githubPath).map((n) => n.githubPath));
+
+      const result = await sync.saveNotes(notes, state.folders, { previousPaths });
       await db.bulkPut('notes', notes);
-      setStatus(`Committed ${result.notesUpdated} note(s).`, 'success');
-      toast('Synced to GitHub');
+
+      // Soft-deleted notes whose file just got removed from the repo can
+      // now be purged locally too — the sync round-trip is complete for them.
+      const deletedNotes = allKnownNotes.filter((n) => n.deleted && n.githubPath && !notes.some((x) => x.id === n.id));
+      for (const dn of deletedNotes) {
+        await db.delete('notes', dn.id);
+      }
+      state.notes = await db.getAll('notes');
+
+      setStatus(`Pushed ${result.notesUpdated} note(s)${result.notesDeleted ? `, removed ${result.notesDeleted} stale file(s)` : ''}.`, 'success');
+      toast('Pushed to GitHub');
+      renderAll();
     } catch (err) {
       setStatus(err.message, 'error');
     }
   });
 
-  document.getElementById('gh-pull').addEventListener('click', async () => {
+  let pullConfirmed = false;
+  const pullBtn = document.getElementById('gh-pull');
+  pullBtn.addEventListener('click', async () => {
     const cfg = config();
     if (!cfg.token || !cfg.owner || !cfg.repo) {
       setStatus('Token, owner, and repo are required.', 'error');
       return;
     }
     persistConfig(cfg);
+
+    if (!pullConfirmed) {
+      pullConfirmed = true;
+      pullBtn.textContent = 'Confirm: replace local notes';
+      setStatus('This replaces ALL local notes with what\u2019s in the repo. Anything local you haven\u2019t pushed will be lost. Click again to confirm.', 'error');
+      return;
+    }
+
     setStatus('Pulling from GitHub…');
     try {
       const sync = new GitHubSync(cfg);
@@ -626,12 +659,23 @@ function openGitHubModal() {
         githubPath: rn.githubPath,
         githubSha: rn.githubSha,
       }));
+
+      // Full reset, not a merge/append: local notes are replaced wholesale
+      // by what's in the repo, so repeated pulls are idempotent instead of
+      // accumulating duplicates.
+      await db.clear('notes');
       await db.bulkPut('notes', toSave);
       state.notes = await db.getAll('notes');
-      setStatus(`Pulled ${toSave.length} note(s).`, 'success');
+      state.selectedNoteId = null;
+
+      setStatus(`Pulled ${toSave.length} note(s). Local notes were reset to match the repo.`, 'success');
+      toast('Local notes reset from GitHub');
       renderAll();
     } catch (err) {
       setStatus(err.message, 'error');
+    } finally {
+      pullConfirmed = false;
+      pullBtn.textContent = 'Pull & reset local notes';
     }
   });
 }

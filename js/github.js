@@ -101,8 +101,15 @@ export class GitHubSync {
     }
   }
 
-  /** Atomic multi-file commit via the Git Data API. */
-  async saveNotes(notes, folders, { commitMessage } = {}) {
+  /**
+   * Atomic multi-file commit via the Git Data API. This is a MIRROR push:
+   * any previously-synced path that no longer corresponds to a currently
+   * pushed note (deleted locally, or renamed so its slug/path changed) is
+   * removed from the tree, not just left behind. Pass `previousPaths` —
+   * every githubPath this client has ever seen for this repo, including
+   * for notes since deleted — so stale files can be identified.
+   */
+  async saveNotes(notes, folders, { commitMessage, previousPaths = new Set() } = {}) {
     const branchRes = await fetch(`${API}/repos/${this.owner}/${this.repo}`, {
       headers: this.headers(),
     });
@@ -125,8 +132,9 @@ export class GitHubSync {
     const commitData = await commitRes.json();
     const baseTreeSha = commitData.tree.sha;
 
-    // 1. Create a blob per note.
+    // 1. Create a blob per note, and track the set of paths this push writes.
     const treeEntries = [];
+    const newPaths = new Set();
     for (const note of notes) {
       const path = `${this.basePath}/${folderPath(folders, note.folderId)}`
         .replace(/\/+$/, '')
@@ -144,8 +152,21 @@ export class GitHubSync {
       if (!blobRes.ok) throw new Error(`Blob create failed: ${await this._err(blobRes)}`);
       const blob = await blobRes.json();
       treeEntries.push({ path, mode: '100644', type: 'blob', sha: blob.sha });
+      newPaths.add(path);
       note.githubPath = path;
       note.githubSha = blob.sha;
+    }
+
+    // 1b. Delete any previously-synced path that isn't being written this
+    // time — covers locally-deleted notes and renames (old slug/path).
+    // Only touch paths under our own basePath, as a safety guard.
+    let deletedCount = 0;
+    for (const oldPath of previousPaths) {
+      if (!oldPath || !oldPath.startsWith(this.basePath + '/')) continue;
+      if (!newPaths.has(oldPath)) {
+        treeEntries.push({ path: oldPath, mode: '100644', type: 'blob', sha: null });
+        deletedCount++;
+      }
     }
 
     // 2. Create a new tree on top of the base tree.
@@ -164,7 +185,7 @@ export class GitHubSync {
         method: 'POST',
         headers: { ...this.headers(), 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          message: commitMessage || `Sync ${notes.length} note(s) from Notes app`,
+          message: commitMessage || `Sync ${notes.length} note(s) from Marginalia`,
           tree: tree.sha,
           parents: [latestCommitSha],
         }),
@@ -184,7 +205,7 @@ export class GitHubSync {
     );
     if (!updateRefRes.ok) throw new Error(`Ref update failed: ${await this._err(updateRefRes)}`);
 
-    return { commitSha: newCommit.sha, notesUpdated: notes.length };
+    return { commitSha: newCommit.sha, notesUpdated: notes.length, notesDeleted: deletedCount };
   }
 
   /** Pull all .md files under basePath and parse them back into notes. */
