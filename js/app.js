@@ -2,6 +2,16 @@ import { db, uuid, nowISO } from './db.js';
 import { searchNotes } from './search.js';
 import { GitHubSync } from './github.js';
 import { ShareSession } from './webrtc.js';
+import {
+  handleTab,
+  handleEnterList,
+  toggleWrap,
+  insertLink,
+  insertCodeBlock,
+  handleSmartPaste,
+  handleAutoPair,
+  wordStats,
+} from './editor-helpers.js';
 
 // ---------------------------------------------------------------------
 // State
@@ -236,9 +246,7 @@ function renderEditor() {
 
   document.getElementById('note-title').value = note.title || '';
   document.getElementById('note-content').value = note.content || '';
-  document.getElementById('note-meta').textContent =
-    `created ${formatDate(note.createdAt)} · updated ${formatDate(note.updatedAt)}` +
-    (note.githubSha ? ' · synced' : '');
+  updateMetaRow(note);
 
   document.getElementById('btn-pin').classList.toggle('active', !!note.pinned);
   document.getElementById('btn-archive').classList.toggle('active', !!note.archived);
@@ -263,11 +271,29 @@ function renderTagRow(note) {
   });
 }
 
+function updateMetaRow(note) {
+  const stats = wordStats(note.content);
+  const parts = [
+    `created ${formatDate(note.createdAt)}`,
+    `updated ${formatDate(note.updatedAt)}`,
+  ];
+  if (note.githubSha) parts.push('synced');
+  if (stats.words > 0) parts.push(`${stats.words} word${stats.words === 1 ? '' : 's'}`, `${stats.minutes} min read`);
+  document.getElementById('note-meta').textContent = parts.join(' · ');
+}
+
 function renderPreview(note) {
   const el = document.getElementById('note-preview');
   if (!state.previewOn) return;
   if (window.marked) {
-    el.innerHTML = window.marked.parse(note.content || '');
+    const rawHtml = window.marked.parse(note.content || '');
+    // Sanitize before inserting — note content can come from typing,
+    // JSON import, or a pulled GitHub repo, none of which are trusted.
+    const cleanHtml = window.DOMPurify ? window.DOMPurify.sanitize(rawHtml) : rawHtml;
+    el.innerHTML = cleanHtml;
+    if (window.hljs) {
+      el.querySelectorAll('pre code').forEach((block) => window.hljs.highlightElement(block));
+    }
   } else {
     el.textContent = note.content || '';
   }
@@ -1084,7 +1110,30 @@ function wireGlobalEvents() {
   document.getElementById('note-title').addEventListener('input', (e) => updateSelectedNote({ title: e.target.value }));
   document.getElementById('note-content').addEventListener('input', (e) => {
     updateSelectedNote({ content: e.target.value });
-    if (state.previewOn) renderPreview(state.notes.find((n) => n.id === state.selectedNoteId));
+    const note = state.notes.find((n) => n.id === state.selectedNoteId);
+    if (note) {
+      updateMetaRow(note);
+      if (state.previewOn) renderPreview(note);
+    }
+  });
+
+  document.getElementById('note-content').addEventListener('keydown', (e) => {
+    const ta = e.target;
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      handleTab(ta, e.shiftKey);
+      return;
+    }
+    if (e.key === 'Enter' && !e.shiftKey) {
+      if (handleEnterList(ta)) { e.preventDefault(); return; }
+    }
+    if (!e.metaKey && !e.ctrlKey) {
+      handleAutoPair(ta, e); // no-op (and no preventDefault) unless text is selected
+    }
+  });
+
+  document.getElementById('note-content').addEventListener('paste', (e) => {
+    handleSmartPaste(e.target, e); // no-op unless pasting a URL over a selection
   });
 
   document.getElementById('tag-input').addEventListener('keydown', (e) => {
@@ -1129,9 +1178,21 @@ function wireGlobalEvents() {
 
   document.addEventListener('keydown', (e) => {
     const meta = e.metaKey || e.ctrlKey;
+    const inEditor = document.activeElement && document.activeElement.id === 'note-content';
+
+    if (inEditor && meta) {
+      const key = e.key.toLowerCase();
+      if (key === 'b') { e.preventDefault(); toggleWrap(document.activeElement, '**'); return; }
+      if (key === 'i') { e.preventDefault(); toggleWrap(document.activeElement, '_'); return; }
+      if (key === 'e') { e.preventDefault(); toggleWrap(document.activeElement, '`'); return; }
+      if (key === 'k') { e.preventDefault(); insertLink(document.activeElement); return; }
+      if (key === 'c' && e.shiftKey) { e.preventDefault(); insertCodeBlock(document.activeElement); return; }
+    }
+
     if (meta && e.key === 'k') {
       e.preventDefault();
       document.getElementById('search-input').focus();
+      return;
     }
     if (meta && e.key === 'n') {
       e.preventDefault();
