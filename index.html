@@ -110,7 +110,10 @@
       </div>
       <div class="list-header-row">
         <span class="list-title" id="list-title">All notes</span>
-        <button class="new-note-btn" id="btn-new-note">+ New</button>
+        <div style="display:flex; gap:6px;">
+          <button class="icon-btn" id="btn-skim-toggle" title="Skim view — show full formatting" aria-label="Toggle skim view">📖</button>
+          <button class="new-note-btn" id="btn-new-note">+ New</button>
+        </div>
       </div>
     </div>
     <div class="note-list" id="note-list"></div>
@@ -128,6 +131,7 @@
         <button class="icon-btn" id="btn-pin" title="Pin note" aria-label="Pin note">📌</button>
         <button class="icon-btn" id="btn-archive" title="Archive note" aria-label="Archive note">🗄</button>
         <button class="icon-btn" id="btn-preview" title="Toggle preview" aria-label="Toggle preview">◧</button>
+        <button class="icon-btn" id="btn-syntax-help" title="Markdown syntax reference" aria-label="Markdown syntax reference">❓</button>
         <div class="editor-toolbar__spacer"></div>
         <span class="sync-status-line" id="autosave-label" style="background:none; padding:0;"></span>
         <button class="icon-btn" id="btn-export-single" title="Export as .md" aria-label="Export note as markdown">↓</button>
@@ -147,10 +151,19 @@
     </div>
   </section>
 
+  <!-- ============ SKIM (mobile dedicated tab) ============ -->
+  <section class="pane" id="pane-skim">
+    <div class="note-list-header">
+      <span class="list-title" id="skim-list-title">All notes</span>
+    </div>
+    <div class="note-list" id="skim-list"></div>
+  </section>
+
   <!-- ============ MOBILE TABS ============ -->
   <nav class="mobile-tabs">
     <button data-tab="sidebar" class="active">📚<span>Library</span></button>
     <button data-tab="list">📇<span>Notes</span></button>
+    <button data-tab="skim">📖<span>Skim</span></button>
     <button data-tab="editor">✎<span>Write</span></button>
   </nav>
 

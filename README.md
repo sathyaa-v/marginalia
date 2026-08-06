@@ -14,6 +14,26 @@ account. Clone it, turn on GitHub Pages, and it's yours.
 4. Optional: tap **Install** in your browser's address bar (or "Add to Home
    Screen" on mobile) to use it like a native app, offline.
 
+## Skim view
+
+Sometimes you want to scan several notes' actual formatting, not just a
+plain-text snippet. Two entry points, same underlying view (respects
+whatever folder/tag/search filter is currently active):
+
+- **Desktop**: the 📖 button in the note list header toggles between
+  compact cards and full rendered previews (headings, code blocks, lists,
+  etc.), faded out after ~220px so you can skim many notes at once.
+- **Mobile**: a dedicated **Skim** tab alongside Library/Notes/Write.
+
+Clicking any card opens that note in the editor as usual.
+
+## Markdown syntax reference
+
+The ❓ button in the editor toolbar opens a categorized list of markdown
+syntax (headings, emphasis, lists, blocks, links/media, tables). Tapping
+an item inserts it at your cursor — or wraps your current selection for
+things like bold/italic/inline code/links, same as the keyboard shortcuts.
+
 ## Editor improvements (behavior only — same textarea + preview layout)
 
 - **Sanitized preview.** Rendered Markdown now goes through DOMPurify
