@@ -174,6 +174,53 @@ export function handleAutoPair(textarea, keydownEvent) {
 }
 
 // ---------------------------------------------------------------------
+// Line-prefix toggle — used by the syntax reference panel for headings,
+// blockquotes, and list markers: adds the prefix to the current line(s),
+// or removes it if every line already has it.
+// ---------------------------------------------------------------------
+export function insertLinePrefix(textarea, prefix) {
+  const { selectionStart, selectionEnd, value } = textarea;
+  const lineStart = value.lastIndexOf('\n', selectionStart - 1) + 1;
+  let lineEnd = value.indexOf('\n', selectionEnd);
+  if (lineEnd === -1) lineEnd = value.length;
+
+  const block = value.slice(lineStart, lineEnd);
+  const lines = block.split('\n');
+  const contentLines = lines.filter((l) => l.trim() !== '');
+  const alreadyPrefixed = contentLines.length > 0 && contentLines.every((l) => l.startsWith(prefix));
+
+  const newLines = lines.map((l) => {
+    if (l.trim() === '') return l;
+    return alreadyPrefixed ? l.slice(prefix.length) : prefix + l;
+  });
+  const newBlock = newLines.join('\n');
+  const delta = alreadyPrefixed ? -prefix.length : prefix.length;
+
+  textarea.setRangeText(newBlock, lineStart, lineEnd, 'select');
+  textarea.selectionStart = Math.max(lineStart, selectionStart + delta);
+  textarea.selectionEnd = Math.max(textarea.selectionStart, selectionEnd + delta);
+  fireInput(textarea);
+}
+
+export function insertAtCursor(textarea, text) {
+  const { selectionStart, selectionEnd } = textarea;
+  textarea.setRangeText(text, selectionStart, selectionEnd, 'end');
+  fireInput(textarea);
+}
+
+export function insertImage(textarea, url) {
+  const { selectionStart, selectionEnd, value } = textarea;
+  const selected = value.slice(selectionStart, selectionEnd);
+  const markdown = `![${selected || 'alt text'}](${url || 'image-url'})`;
+  textarea.setRangeText(markdown, selectionStart, selectionEnd, 'end');
+  fireInput(textarea);
+}
+
+export function insertTable(textarea) {
+  insertAtCursor(textarea, '\n| Column 1 | Column 2 |\n| --- | --- |\n| Cell | Cell |\n');
+}
+
+// ---------------------------------------------------------------------
 // Word count / reading time — for the existing meta row, no new UI.
 // ---------------------------------------------------------------------
 export function wordStats(content) {

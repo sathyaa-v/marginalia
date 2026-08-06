@@ -10,6 +10,10 @@ import {
   insertCodeBlock,
   handleSmartPaste,
   handleAutoPair,
+  insertLinePrefix,
+  insertAtCursor,
+  insertImage,
+  insertTable,
   wordStats,
 } from './editor-helpers.js';
 
@@ -23,6 +27,7 @@ const state = {
   selectedNoteId: null,
   query: '',
   previewOn: false,
+  skimMode: false,   // desktop toggle: note list shows full rendered previews instead of snippets
   theme: localStorage.getItem('theme') || 'system',
   mobileTab: 'list',
 };
@@ -183,11 +188,23 @@ function renderTagCloud() {
 }
 
 function renderNoteList() {
-  const root = document.getElementById('note-list');
   const results = visibleNotes();
-  root.innerHTML = '';
+  const label = viewLabel();
+  document.getElementById('list-title').textContent = label;
+  const skimTitleEl = document.getElementById('skim-list-title');
+  if (skimTitleEl) skimTitleEl.textContent = label;
 
-  document.getElementById('list-title').textContent = viewLabel();
+  renderNoteCardsInto('note-list', results, state.skimMode);
+  // The dedicated mobile skim tab is only rendered while it's actually
+  // visible — full-markdown rendering every note on every list refresh
+  // (e.g. on each debounced autosave) isn't worth paying for when hidden.
+  if (state.mobileTab === 'skim') renderNoteCardsInto('skim-list', results, true);
+}
+
+function renderNoteCardsInto(containerId, results, skim) {
+  const root = document.getElementById(containerId);
+  if (!root) return;
+  root.innerHTML = '';
 
   if (results.length === 0) {
     root.innerHTML = `
@@ -200,19 +217,36 @@ function renderNoteList() {
 
   results.forEach(({ note, snippet }) => {
     const card = document.createElement('div');
-    card.className = 'note-card' + (note.id === state.selectedNoteId ? ' selected' : '');
+    card.className = 'note-card' + (skim ? ' note-card--skim' : '') + (note.id === state.selectedNoteId ? ' selected' : '');
     card.tabIndex = 0;
     card.setAttribute('role', 'button');
 
     const folder = state.folders.find((f) => f.id === note.folderId);
     const tabLabel = folder ? escapeHtml(folder.name) : 'unfiled';
+    const titleHtml = `${note.pinned ? '<span class="note-card__pin">📌</span>' : ''}${escapeHtml(note.title || 'Untitled')}`;
+    const tagsHtml = (note.tags || []).slice(0, 6).map((t) => `<span class="tag-pill">#${escapeHtml(t)}</span>`).join('');
 
-    card.innerHTML = `
-      <div class="note-card__tab">${tabLabel} · ${relativeTime(note.updatedAt)}</div>
-      <div class="note-card__title">${note.pinned ? '<span class="note-card__pin">📌</span>' : ''}${escapeHtml(note.title || 'Untitled')}</div>
-      <div class="note-card__snippet">${snippet || escapeHtml((note.content || '').slice(0, 140))}</div>
-      <div class="note-card__meta">${(note.tags || []).slice(0, 3).map((t) => `<span class="tag-pill">#${escapeHtml(t)}</span>`).join('')}</div>
-    `;
+    if (skim) {
+      const rawHtml = window.marked ? window.marked.parse(note.content || '') : escapeHtml(note.content || '');
+      const cleanHtml = window.DOMPurify ? window.DOMPurify.sanitize(rawHtml) : rawHtml;
+      card.innerHTML = `
+        <div class="note-card__tab">${tabLabel} · ${relativeTime(note.updatedAt)}</div>
+        <div class="note-card__title">${titleHtml}</div>
+        <div class="note-card__full-preview">${cleanHtml}</div>
+        <div class="note-card__meta">${tagsHtml}</div>
+      `;
+      if (window.hljs) {
+        card.querySelectorAll('pre code').forEach((block) => window.hljs.highlightElement(block));
+      }
+    } else {
+      card.innerHTML = `
+        <div class="note-card__tab">${tabLabel} · ${relativeTime(note.updatedAt)}</div>
+        <div class="note-card__title">${titleHtml}</div>
+        <div class="note-card__snippet">${snippet || escapeHtml((note.content || '').slice(0, 140))}</div>
+        <div class="note-card__meta">${tagsHtml}</div>
+      `;
+    }
+
     card.addEventListener('click', () => selectNote(note.id));
     card.addEventListener('keydown', (e) => { if (e.key === 'Enter') selectNote(note.id); });
     root.appendChild(card);
@@ -706,6 +740,122 @@ function wireSyncBanner() {
 }
 
 // ---------------------------------------------------------------------
+// Markdown syntax reference — click an item to insert it at the cursor.
+// ---------------------------------------------------------------------
+const SYNTAX_GROUPS = [
+  {
+    group: 'Headings',
+    items: [
+      { action: 'h1', label: 'Heading 1', example: '# Heading' },
+      { action: 'h2', label: 'Heading 2', example: '## Heading' },
+      { action: 'h3', label: 'Heading 3', example: '### Heading' },
+    ],
+  },
+  {
+    group: 'Emphasis',
+    items: [
+      { action: 'bold', label: 'Bold', example: '**bold**' },
+      { action: 'italic', label: 'Italic', example: '_italic_' },
+      { action: 'strike', label: 'Strikethrough', example: '~~strike~~' },
+      { action: 'code', label: 'Inline code', example: '`code`' },
+    ],
+  },
+  {
+    group: 'Lists',
+    items: [
+      { action: 'ul', label: 'Bullet list', example: '- item' },
+      { action: 'ol', label: 'Numbered list', example: '1. item' },
+      { action: 'task', label: 'Task list', example: '- [ ] item' },
+    ],
+  },
+  {
+    group: 'Blocks',
+    items: [
+      { action: 'quote', label: 'Blockquote', example: '> quote' },
+      { action: 'codeblock', label: 'Code block', example: '```\ncode\n```' },
+      { action: 'hr', label: 'Divider', example: '---' },
+    ],
+  },
+  {
+    group: 'Links & media',
+    items: [
+      { action: 'link', label: 'Link', example: '[text](url)' },
+      { action: 'image', label: 'Image', example: '![alt](url)' },
+    ],
+  },
+  {
+    group: 'Tables',
+    items: [
+      { action: 'table', label: 'Table', example: '| A | B |' },
+    ],
+  },
+];
+
+let savedEditorSelection = null;
+
+function openSyntaxModal() {
+  const textarea = document.getElementById('note-content');
+  savedEditorSelection = { start: textarea.selectionStart, end: textarea.selectionEnd };
+
+  const groupsHtml = SYNTAX_GROUPS.map((g) => `
+    <div class="syntax-group">
+      <div class="syntax-group__label">${escapeHtml(g.group)}</div>
+      ${g.items.map((it) => `
+        <button class="syntax-item" data-action="${it.action}" type="button">
+          <span class="syntax-item__label">${escapeHtml(it.label)}</span>
+          <code class="syntax-item__example">${escapeHtml(it.example)}</code>
+        </button>
+      `).join('')}
+    </div>
+  `).join('');
+
+  renderModal(`
+    <div class="modal__header">
+      <span class="modal__title">Markdown syntax</span>
+      <button class="icon-btn" id="modal-close" aria-label="Close">✕</button>
+    </div>
+    <div class="modal__body">
+      <div class="field-hint" style="margin-bottom:12px;">Tap any item to insert it at your cursor.</div>
+      ${groupsHtml}
+    </div>
+  `);
+
+  document.getElementById('modal-close').addEventListener('click', closeModal);
+  document.querySelectorAll('.syntax-item').forEach((el) => {
+    el.addEventListener('click', () => applySyntaxAction(el.dataset.action));
+  });
+}
+
+function applySyntaxAction(action) {
+  const ta = document.getElementById('note-content');
+  ta.focus();
+  if (savedEditorSelection) {
+    ta.setSelectionRange(savedEditorSelection.start, savedEditorSelection.end);
+  }
+
+  switch (action) {
+    case 'h1': insertLinePrefix(ta, '# '); break;
+    case 'h2': insertLinePrefix(ta, '## '); break;
+    case 'h3': insertLinePrefix(ta, '### '); break;
+    case 'bold': toggleWrap(ta, '**'); break;
+    case 'italic': toggleWrap(ta, '_'); break;
+    case 'strike': toggleWrap(ta, '~~'); break;
+    case 'code': toggleWrap(ta, '`'); break;
+    case 'codeblock': insertCodeBlock(ta); break;
+    case 'quote': insertLinePrefix(ta, '> '); break;
+    case 'ul': insertLinePrefix(ta, '- '); break;
+    case 'ol': insertLinePrefix(ta, '1. '); break;
+    case 'task': insertLinePrefix(ta, '- [ ] '); break;
+    case 'link': insertLink(ta); break;
+    case 'image': insertImage(ta); break;
+    case 'table': insertTable(ta); break;
+    case 'hr': insertAtCursor(ta, '\n\n---\n\n'); break;
+  }
+  closeModal();
+  ta.focus();
+}
+
+// ---------------------------------------------------------------------
 // GitHub sync modal
 // ---------------------------------------------------------------------
 function openGitHubModal() {
@@ -1098,9 +1248,11 @@ function applyMobileTab() {
   document.getElementById('pane-sidebar').classList.toggle('mobile-visible', state.mobileTab === 'sidebar');
   document.getElementById('pane-list').classList.toggle('mobile-visible', state.mobileTab === 'list');
   document.getElementById('pane-editor').classList.toggle('mobile-visible', state.mobileTab === 'editor');
+  document.getElementById('pane-skim').classList.toggle('mobile-visible', state.mobileTab === 'skim');
   document.querySelectorAll('.mobile-tabs button').forEach((b) => {
     b.classList.toggle('active', b.dataset.tab === state.mobileTab);
   });
+  if (state.mobileTab === 'skim') renderNoteList(); // skim-list render is gated on being visible
 }
 
 // ---------------------------------------------------------------------
@@ -1113,6 +1265,11 @@ function wireGlobalEvents() {
 
   document.getElementById('btn-add-folder').addEventListener('click', addFolder);
   document.getElementById('btn-new-note').addEventListener('click', createNote);
+  document.getElementById('btn-skim-toggle').addEventListener('click', () => {
+    state.skimMode = !state.skimMode;
+    document.getElementById('btn-skim-toggle').classList.toggle('active', state.skimMode);
+    renderNoteList();
+  });
   document.getElementById('search-input').addEventListener('input', onSearchInput);
 
   document.getElementById('note-title').addEventListener('input', (e) => updateSelectedNote({ title: e.target.value }));
@@ -1160,6 +1317,7 @@ function wireGlobalEvents() {
     state.previewOn = !state.previewOn;
     renderEditor();
   });
+  document.getElementById('btn-syntax-help').addEventListener('click', openSyntaxModal);
 
   document.getElementById('btn-theme').addEventListener('click', cycleTheme);
   document.getElementById('btn-export').addEventListener('click', exportJSON);
