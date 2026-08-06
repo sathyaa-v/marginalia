@@ -578,12 +578,12 @@ async function pushToGitHub(cfg) {
 async function pullAndResetFromGitHub(cfg) {
   try {
     const sync = new GitHubSync(cfg);
-    const remoteNotes = await sync.pullNotes();
+    const { notes: remoteNotes, folders: remoteFolders } = await sync.pullNotes();
     const toSave = remoteNotes.map((rn) => ({
       id: uuid(),
       title: rn.title,
       content: rn.content,
-      folderId: null,
+      folderId: rn.folderId,
       tags: rn.tags,
       pinned: rn.pinned,
       archived: false,
@@ -594,14 +594,22 @@ async function pullAndResetFromGitHub(cfg) {
       githubSha: rn.githubSha,
     }));
 
-    // Full reset, not a merge/append — repeated pulls are idempotent.
+    // Full reset, not a merge/append — notes AND folders are replaced
+    // wholesale by what's in the repo, so repeated pulls are idempotent
+    // and folder assignment survives the round trip.
     await db.clear('notes');
+    await db.clear('folders');
+    await db.bulkPut('folders', remoteFolders);
     await db.bulkPut('notes', toSave);
     state.notes = await db.getAll('notes');
+    state.folders = await db.getAll('folders');
     state.selectedNoteId = null;
     renderAll();
 
-    return { ok: true, message: `Pulled ${toSave.length} note(s). Local notes were reset to match the repo.` };
+    return {
+      ok: true,
+      message: `Pulled ${toSave.length} note(s) into ${remoteFolders.length} folder(s). Local notes and folders were reset to match the repo.`,
+    };
   } catch (err) {
     return { ok: false, message: err.message };
   }

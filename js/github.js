@@ -2,6 +2,8 @@
 // Uses the Git Data API (blob -> tree -> commit -> ref) so a multi-note
 // save is ONE atomic commit rather than one Contents-API request per file.
 
+import { uuid, nowISO } from './db.js';
+
 const API = 'https://api.github.com';
 
 function slugify(title) {
@@ -23,10 +25,24 @@ function folderPath(folders, folderId) {
   return parts.join('/');
 }
 
-function noteToMarkdown(note) {
+// Human-readable version (original names, not slugged) — stored in
+// front-matter so a pull can rebuild the exact folder name/hierarchy
+// instead of guessing it back from a lossy slug in the directory path.
+function folderDisplayPath(folders, folderId) {
+  const parts = [];
+  let current = folderId ? folders.find((f) => f.id === folderId) : null;
+  while (current) {
+    parts.unshift(current.name);
+    current = current.parentId ? folders.find((f) => f.id === current.parentId) : null;
+  }
+  return parts.join('/');
+}
+
+function noteToMarkdown(note, folders) {
   const fm = [
     '---',
     `title: ${JSON.stringify(note.title || 'Untitled')}`,
+    `folder: ${JSON.stringify(folderDisplayPath(folders, note.folderId))}`,
     `tags: [${(note.tags || []).map((t) => JSON.stringify(t)).join(', ')}]`,
     `pinned: ${!!note.pinned}`,
     `created: ${note.createdAt}`,
@@ -59,6 +75,12 @@ function parseMarkdown(raw) {
         meta.title = JSON.parse(rawVal);
       } catch {
         meta.title = rawVal;
+      }
+    } else if (key === 'folder') {
+      try {
+        meta.folder = JSON.parse(rawVal);
+      } catch {
+        meta.folder = rawVal;
       }
     } else {
       meta[key] = rawVal;
@@ -158,7 +180,7 @@ export class GitHubSync {
         .replace(/\/+$/, '')
         .concat(`/${slugify(note.title)}-${note.id.slice(0, 8)}.md`)
         .replace(/^\/+/, '');
-      const content = noteToMarkdown(note);
+      const content = noteToMarkdown(note, folders);
       const blobRes = await fetch(
         `${API}/repos/${this.owner}/${this.repo}/git/blobs`,
         {
@@ -226,16 +248,37 @@ export class GitHubSync {
     return { commitSha: newCommit.sha, notesUpdated: notes.length, notesDeleted: deletedCount };
   }
 
-  /** Pull all .md files under basePath and parse them back into notes. */
+  /**
+   * Pull all .md files under basePath and parse them back into notes,
+   * also reconstructing the folder hierarchy so pulled notes land back
+   * in the right folder instead of unfiled. Folder identity comes from
+   * each note's `folder:` front-matter field (human-readable, exact
+   * names) when present; for files that predate that field, or were
+   * added to the repo by hand, it falls back to the physical directory
+   * path the file was found in.
+   */
   async pullNotes() {
     const res = await fetch(
       `${API}/repos/${this.owner}/${this.repo}/contents/${this.basePath}`,
       { headers: this.headers() }
     );
-    if (res.status === 404) return [];
+    if (res.status === 404) return { notes: [], folders: [] };
     if (!res.ok) throw new Error(`Pull failed: ${await this._err(res)}`);
     const entries = await res.json();
     const files = await this._collectMarkdownFiles(entries);
+
+    // path (joined by '/') -> folder object, built as we go so nested
+    // folders are only created once and share the same parentId chain.
+    const foldersByPath = new Map();
+    const ensureFolder = (segments) => {
+      if (!segments || segments.length === 0) return null;
+      const key = segments.join('/');
+      if (foldersByPath.has(key)) return foldersByPath.get(key).id;
+      const parentId = segments.length > 1 ? ensureFolder(segments.slice(0, -1)) : null;
+      const folder = { id: uuid(), name: segments[segments.length - 1], parentId, createdAt: nowISO(), updatedAt: nowISO() };
+      foldersByPath.set(key, folder);
+      return folder.id;
+    };
 
     const notes = [];
     for (const file of files) {
@@ -244,18 +287,31 @@ export class GitHubSync {
       const fileData = await fileRes.json();
       const raw = decodeURIComponent(escape(atob(fileData.content.replace(/\n/g, ''))));
       const { meta, content } = parseMarkdown(raw);
+
+      let segments;
+      if (meta.folder) {
+        segments = meta.folder.split('/').filter(Boolean);
+      } else {
+        // Fallback: derive from the file's own directory under basePath.
+        const rel = file.path.startsWith(this.basePath + '/') ? file.path.slice(this.basePath.length + 1) : file.path;
+        segments = rel.split('/');
+        segments.pop(); // drop the filename itself
+      }
+      const folderId = ensureFolder(segments);
+
       notes.push({
         title: meta.title || file.name.replace(/\.md$/, ''),
         content,
         tags: meta.tags || [],
         pinned: !!meta.pinned,
+        folderId,
         createdAt: meta.created,
         updatedAt: meta.updated,
         githubPath: file.path,
         githubSha: fileData.sha,
       });
     }
-    return notes;
+    return { notes, folders: [...foldersByPath.values()] };
   }
 
   async _collectMarkdownFiles(entries, acc = []) {
