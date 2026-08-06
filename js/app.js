@@ -827,7 +827,9 @@ function openShareModal() {
   }
 
   function renderSharedSnapshot(data) {
-    // Read-only, in-memory only — never written to IndexedDB (v1 is view-only, FR-47 out of scope).
+    // Read-only viewing, but the user can explicitly copy an individual
+    // note into their own local library — a one-time import, not live
+    // sync back to the host (collaborative write-mode stays out of scope).
     const view = document.getElementById('shared-view');
     if (!view) return;
     const notes = data.notes || [];
@@ -843,9 +845,36 @@ function openShareModal() {
         const n = notes[Number(el.dataset.i)];
         const detail = document.getElementById('shared-note-detail');
         detail.style.display = 'block';
-        detail.textContent = n.content || '';
+        detail.innerHTML = `
+          <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+            <button class="btn btn-primary" id="import-shared-note">Import to my notes</button>
+          </div>
+          <div id="shared-note-body" style="white-space:pre-wrap;">${escapeHtml(n.content || '')}</div>
+        `;
+        document.getElementById('import-shared-note').addEventListener('click', async () => {
+          await importSharedNote(n);
+        });
       });
     });
+  }
+
+  async function importSharedNote(n) {
+    const note = {
+      id: uuid(),
+      title: n.title || 'Untitled',
+      content: n.content || '',
+      folderId: null,
+      tags: [...(n.tags || []), 'shared'],
+      pinned: false,
+      archived: false,
+      deleted: false,
+      createdAt: nowISO(),
+      updatedAt: nowISO(),
+    };
+    state.notes.unshift(note);
+    await db.put('notes', note);
+    renderAll();
+    toast(`Imported "${note.title}" to your notes`);
   }
 }
 
