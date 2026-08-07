@@ -14,6 +14,20 @@ account. Clone it, turn on GitHub Pages, and it's yours.
 4. Optional: tap **Install** in your browser's address bar (or "Add to Home
    Screen" on mobile) to use it like a native app, offline.
 
+## Theme
+
+The 🎨 **Theme** button in the sidebar opens a picker with two independent
+choices:
+
+- **Appearance** — System / Light / Dark, same as before.
+- **Palette** — five color themes, each with its own light and dark
+  variant: **Ledger** (the original warm ochre/teal/clay), **Slate**
+  (cool blue-gray), **Forest** (earthy green), **Rosewood** (warm
+  brick/terracotta), and **Ink & Paper** (monochrome, high contrast).
+
+Both choices persist independently (`localStorage`), so e.g. Forest +
+Dark stays Forest + Dark until you change either one.
+
 ## Skim view
 
 Sometimes you want to scan several notes' actual formatting, not just a
@@ -114,12 +128,20 @@ or pulls last wins.
 
 Once a PAT is configured, every time the app loads it makes one lightweight
 API call (the latest commit touching the notes path — no file contents)
-and compares that timestamp against your newest local note. If they
-disagree by more than a few seconds, a banner appears at the top with
-**Push** and **Pull** buttons (whichever direction looks right is
-highlighted) so you can resolve it without opening Settings. A bad token,
-being offline, or a rate limit just fails silently here — real errors
-still surface when you use the GitHub sync modal directly.
+and compares it against a **sync baseline** recorded locally the last time
+this browser actually pushed or pulled this specific repo — not against
+your notes' own edit timestamps. (An earlier version compared "when was
+this note last edited" directly against "when was the latest commit,"
+which are two different clocks — a commit is always at least as new as
+the edit it contains, so that comparison falsely claimed GitHub was newer
+right after a clean pull. Fixed by tracking what was actually synced.)
+
+If GitHub has changed since your last sync, or you've edited locally
+since then, a banner appears at the top with **Push** and **Pull**
+buttons (whichever direction looks right is highlighted; if both sides
+changed, neither is emphasized). A bad token, being offline, or a rate
+limit just fails silently here — real errors still surface when you use
+the GitHub sync modal directly.
 
 ## Share on Wi-Fi (Phase 3, included)
 
