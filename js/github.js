@@ -245,7 +245,12 @@ export class GitHubSync {
     );
     if (!updateRefRes.ok) throw new Error(`Ref update failed: ${await this._err(updateRefRes)}`);
 
-    return { commitSha: newCommit.sha, notesUpdated: notes.length, notesDeleted: deletedCount };
+    return {
+      commitSha: newCommit.sha,
+      commitDate: newCommit.committer?.date || newCommit.author?.date || new Date().toISOString(),
+      notesUpdated: notes.length,
+      notesDeleted: deletedCount,
+    };
   }
 
   /**

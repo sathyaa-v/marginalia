@@ -29,6 +29,8 @@ const state = {
   previewOn: false,
   skimMode: false,   // desktop toggle: note list shows full rendered previews instead of snippets
   theme: localStorage.getItem('theme') || 'system',
+  palette: localStorage.getItem('palette') || 'default',
+  fontSize: localStorage.getItem('fontSize') || 'medium',
   mobileTab: 'list',
 };
 
@@ -40,6 +42,8 @@ let shareSession = null; // active ShareSession, host or joiner (spec §3.9)
 // ---------------------------------------------------------------------
 async function boot() {
   applyTheme();
+  applyPalette();
+  applyFontSize();
   await requestPersistence();
   state.notes = await db.getAll('notes');
   state.folders = await db.getAll('folders');
@@ -474,22 +478,104 @@ function onSearchInput(e) {
 // ---------------------------------------------------------------------
 // Theme
 // ---------------------------------------------------------------------
+const PALETTES = [
+  { id: 'default', label: 'Ledger', accent: '#96691c', accent2: '#3f6659', tag: '#a2543c' },
+  { id: 'slate', label: 'Slate', accent: '#3d5a80', accent2: '#6b7f95', tag: '#7d6b91' },
+  { id: 'forest', label: 'Forest', accent: '#56773f', accent2: '#3f6b5e', tag: '#8a6a3d' },
+  { id: 'rosewood', label: 'Rosewood', accent: '#9c4a4a', accent2: '#6f5a68', tag: '#b1663f' },
+  { id: 'ink', label: 'Ink & Paper', accent: '#111111', accent2: '#555555', tag: '#333333' },
+];
+
+const FONT_SIZES = [
+  { id: 'small', label: 'Small' },
+  { id: 'medium', label: 'Medium' },
+  { id: 'large', label: 'Large' },
+  { id: 'xlarge', label: 'X-Large' },
+];
+
 function applyTheme() {
   let resolved = state.theme;
   if (resolved === 'system') {
     resolved = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   }
   document.body.setAttribute('data-theme', resolved);
-  const label = { system: 'System', light: 'Light', dark: 'Dark' }[state.theme];
-  const labelEl = document.getElementById('theme-label');
-  if (labelEl) labelEl.textContent = 'Theme: ' + label;
+  updateThemeLabel();
 }
 
-function cycleTheme() {
-  const order = ['system', 'light', 'dark'];
-  state.theme = order[(order.indexOf(state.theme) + 1) % order.length];
-  localStorage.setItem('theme', state.theme);
-  applyTheme();
+function applyPalette() {
+  document.body.setAttribute('data-palette', state.palette);
+  updateThemeLabel();
+}
+
+function applyFontSize() {
+  document.body.setAttribute('data-font-size', state.fontSize);
+  updateThemeLabel();
+}
+
+function updateThemeLabel() {
+  const modeLabel = { system: 'System', light: 'Light', dark: 'Dark' }[state.theme];
+  const paletteLabel = (PALETTES.find((p) => p.id === state.palette) || PALETTES[0]).label;
+  const el = document.getElementById('theme-label');
+  if (el) el.textContent = `${paletteLabel} · ${modeLabel}`;
+}
+
+function openThemeModal() {
+  renderModal(`
+    <div class="modal__header">
+      <span class="modal__title">Theme</span>
+      <button class="icon-btn" id="modal-close" aria-label="Close">✕</button>
+    </div>
+    <div class="modal__body">
+      <div class="field-hint" style="margin-bottom:8px;">Appearance</div>
+      <div class="mode-toggle" style="margin-bottom:20px;">
+        <label><input type="radio" name="theme-mode" value="system" ${state.theme === 'system' ? 'checked' : ''}/> System</label>
+        <label><input type="radio" name="theme-mode" value="light" ${state.theme === 'light' ? 'checked' : ''}/> Light</label>
+        <label><input type="radio" name="theme-mode" value="dark" ${state.theme === 'dark' ? 'checked' : ''}/> Dark</label>
+      </div>
+      <div class="field-hint" style="margin-bottom:8px;">Text size</div>
+      <div class="mode-toggle" style="margin-bottom:20px;">
+        ${FONT_SIZES.map((f) => `<label><input type="radio" name="font-size" value="${f.id}" ${state.fontSize === f.id ? 'checked' : ''}/> ${escapeHtml(f.label)}</label>`).join('')}
+      </div>
+      <div class="field-hint" style="margin-bottom:8px;">Palette</div>
+      <div class="palette-grid">
+        ${PALETTES.map((p) => `
+          <button class="palette-swatch${state.palette === p.id ? ' active' : ''}" data-palette="${p.id}" type="button">
+            <span class="palette-swatch__dots">
+              <span style="background:${p.accent}"></span><span style="background:${p.accent2}"></span><span style="background:${p.tag}"></span>
+            </span>
+            <span class="palette-swatch__label">${escapeHtml(p.label)}</span>
+          </button>
+        `).join('')}
+      </div>
+    </div>
+  `);
+
+  document.getElementById('modal-close').addEventListener('click', closeModal);
+
+  document.querySelectorAll('input[name="theme-mode"]').forEach((r) => {
+    r.addEventListener('change', (e) => {
+      state.theme = e.target.value;
+      localStorage.setItem('theme', state.theme);
+      applyTheme();
+    });
+  });
+
+  document.querySelectorAll('input[name="font-size"]').forEach((r) => {
+    r.addEventListener('change', (e) => {
+      state.fontSize = e.target.value;
+      localStorage.setItem('fontSize', state.fontSize);
+      applyFontSize();
+    });
+  });
+
+  document.querySelectorAll('.palette-swatch').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.palette = btn.dataset.palette;
+      localStorage.setItem('palette', state.palette);
+      applyPalette();
+      document.querySelectorAll('.palette-swatch').forEach((b) => b.classList.toggle('active', b.dataset.palette === state.palette));
+    });
+  });
 }
 
 // ---------------------------------------------------------------------
@@ -582,6 +668,31 @@ function getSavedGitHubConfig() {
   }
 }
 
+// A sync "baseline" records what local and remote looked like the last
+// time this browser actually synced with this specific repo — scoped by
+// owner/repo/basePath so switching to a different repo doesn't carry a
+// stale baseline over. Without this, the only thing to compare on load
+// would be each note's own `updated:` time against the *commit* time
+// that saved it — two different clocks that are structurally never
+// equal, which made the banner claim GitHub was newer right after a
+// clean pull.
+function getSyncMeta(cfg) {
+  try {
+    const meta = JSON.parse(localStorage.getItem('githubSyncMeta') || '{}');
+    if (meta.owner === cfg.owner && meta.repo === cfg.repo && meta.basePath === cfg.basePath) return meta;
+  } catch { /* fall through to empty baseline */ }
+  return {};
+}
+
+function setSyncMeta(cfg, partial) {
+  localStorage.setItem('githubSyncMeta', JSON.stringify({
+    owner: cfg.owner,
+    repo: cfg.repo,
+    basePath: cfg.basePath,
+    ...partial,
+  }));
+}
+
 async function pushToGitHub(cfg) {
   try {
     const sync = new GitHubSync(cfg);
@@ -599,6 +710,8 @@ async function pushToGitHub(cfg) {
     for (const dn of deletedNotes) await db.delete('notes', dn.id);
     state.notes = await db.getAll('notes');
     renderAll();
+
+    setSyncMeta(cfg, { lastSyncedAt: nowISO(), lastSyncedRemoteAt: result.commitDate });
 
     return {
       ok: true,
@@ -640,6 +753,10 @@ async function pullAndResetFromGitHub(cfg) {
     state.selectedNoteId = null;
     renderAll();
 
+    let remoteAt = null;
+    try { remoteAt = await sync.getLatestRemoteChangeTime(); } catch { /* non-fatal, fall back below */ }
+    setSyncMeta(cfg, { lastSyncedAt: nowISO(), lastSyncedRemoteAt: remoteAt || nowISO() });
+
     return {
       ok: true,
       message: `Pulled ${toSave.length} note(s) into ${remoteFolders.length} folder(s). Local notes and folders were reset to match the repo.`,
@@ -665,7 +782,8 @@ async function checkGitHubSyncStatus() {
     const sync = new GitHubSync(cfg);
     const remoteLatest = await sync.getLatestRemoteChangeTime();
     const localLatest = localLatestUpdatedAt();
-    showSyncBannerIfNeeded(localLatest, remoteLatest);
+    const meta = getSyncMeta(cfg);
+    showSyncBannerIfNeeded(localLatest, remoteLatest, meta);
   } catch {
     // Silent — a bad token, offline state, or rate limit shouldn't block
     // the homepage. The GitHub sync modal will surface real errors when
@@ -673,36 +791,58 @@ async function checkGitHubSyncStatus() {
   }
 }
 
-function showSyncBannerIfNeeded(localLatest, remoteLatest) {
+function showSyncBannerIfNeeded(localLatest, remoteLatest, meta) {
   const banner = document.getElementById('sync-banner');
   const text = document.getElementById('sync-banner-text');
   const TOLERANCE_MS = 3000; // avoid false positives from clock/rounding noise
 
-  if (!localLatest && !remoteLatest) {
-    banner.style.display = 'none';
-    return;
-  }
-
   const localMs = localLatest ? new Date(localLatest).getTime() : 0;
   const remoteMs = remoteLatest ? new Date(remoteLatest).getTime() : 0;
 
-  if (Math.abs(localMs - remoteMs) <= TOLERANCE_MS) {
+  // No baseline yet for this repo (never synced from this browser) — fall
+  // back to a coarse direct comparison, since there's nothing better to
+  // compare against.
+  if (!meta.lastSyncedAt && !meta.lastSyncedRemoteAt) {
+    if (!localLatest && !remoteLatest) { banner.style.display = 'none'; return; }
+    if (Math.abs(localMs - remoteMs) <= TOLERANCE_MS) { banner.style.display = 'none'; return; }
+
+    let message, suggested;
+    if (!remoteLatest) { message = 'These notes haven\u2019t been pushed to GitHub yet.'; suggested = 'push'; }
+    else if (!localLatest) { message = 'GitHub has notes that aren\u2019t on this device.'; suggested = 'pull'; }
+    else if (localMs > remoteMs) { message = `Local notes are newer than GitHub (updated ${relativeTime(localLatest)}).`; suggested = 'push'; }
+    else { message = `GitHub has newer changes than this device (updated ${relativeTime(remoteLatest)}).`; suggested = 'pull'; }
+
+    text.textContent = message;
+    banner.style.display = 'flex';
+    document.getElementById('sync-banner-push').classList.toggle('btn-primary', suggested === 'push');
+    document.getElementById('sync-banner-pull').classList.toggle('btn-primary', suggested === 'pull');
+    return;
+  }
+
+  // Normal case: compare each side against its own baseline from the last
+  // sync, not against each other. "Did GitHub change since I last synced"
+  // and "did I edit locally since I last synced" are independent
+  // questions, each with its own clock.
+  const lastSyncedAtMs = meta.lastSyncedAt ? new Date(meta.lastSyncedAt).getTime() : 0;
+  const lastSyncedRemoteMs = meta.lastSyncedRemoteAt ? new Date(meta.lastSyncedRemoteAt).getTime() : 0;
+
+  const remoteChanged = remoteLatest && (remoteMs - lastSyncedRemoteMs > TOLERANCE_MS);
+  const localChanged = localLatest && (localMs - lastSyncedAtMs > TOLERANCE_MS);
+
+  if (!remoteChanged && !localChanged) {
     banner.style.display = 'none';
     return;
   }
 
   let message, suggested;
-  if (!remoteLatest) {
-    message = 'These notes haven\u2019t been pushed to GitHub yet.';
-    suggested = 'push';
-  } else if (!localLatest) {
-    message = 'GitHub has notes that aren\u2019t on this device.';
-    suggested = 'pull';
-  } else if (localMs > remoteMs) {
-    message = `Local notes are newer than GitHub (updated ${relativeTime(localLatest)}).`;
+  if (localChanged && remoteChanged) {
+    message = 'Both this device and GitHub have changed since your last sync.';
+    suggested = null;
+  } else if (localChanged) {
+    message = `Local notes have changed since your last sync (updated ${relativeTime(localLatest)}).`;
     suggested = 'push';
   } else {
-    message = `GitHub has newer changes than this device (updated ${relativeTime(remoteLatest)}).`;
+    message = `GitHub has changed since your last sync (updated ${relativeTime(remoteLatest)}).`;
     suggested = 'pull';
   }
 
@@ -1319,7 +1459,7 @@ function wireGlobalEvents() {
   });
   document.getElementById('btn-syntax-help').addEventListener('click', openSyntaxModal);
 
-  document.getElementById('btn-theme').addEventListener('click', cycleTheme);
+  document.getElementById('btn-theme').addEventListener('click', openThemeModal);
   document.getElementById('btn-export').addEventListener('click', exportJSON);
   document.getElementById('btn-import').addEventListener('click', () => document.getElementById('import-file').click());
   document.getElementById('import-file').addEventListener('change', (e) => {
