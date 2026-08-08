@@ -87,6 +87,13 @@
         <span aria-hidden="true">↑</span> Import notes
       </button>
       <input type="file" id="import-file" accept=".json" hidden />
+      <button class="text-btn" id="btn-export-zip">
+        <span aria-hidden="true">🗂</span> Export as Markdown ZIP
+      </button>
+      <button class="text-btn" id="btn-import-zip">
+        <span aria-hidden="true">🗂</span> Import Markdown ZIP
+      </button>
+      <input type="file" id="import-zip-file" accept=".zip" hidden />
       <button class="text-btn" id="btn-theme">
         <span aria-hidden="true">🎨</span> <span id="theme-label">Theme</span>
       </button>
@@ -176,7 +183,8 @@
 
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" defer></script>
-<script src="https://cdn.jsdelivr.net/npm/[email protected]/highlight.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/highlight.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js" defer></script>
 <script type="module" src="js/app.js"></script>
 </body>

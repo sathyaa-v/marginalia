@@ -14,19 +14,52 @@ account. Clone it, turn on GitHub Pages, and it's yours.
 4. Optional: tap **Install** in your browser's address bar (or "Add to Home
    Screen" on mobile) to use it like a native app, offline.
 
+## Table of contents
+
+Notes with 3 or more headings get an auto-generated, collapsible table of
+contents at the top of the preview pane. Click any entry to smooth-scroll
+to that section. Short notes don't get one — no clutter for a two-paragraph
+note.
+
+## Markdown ZIP export/import
+
+Alongside JSON export/import, the sidebar now has **Export as Markdown
+ZIP** and **Import Markdown ZIP**:
+
+- **Export** writes every note as a `.md` file with front-matter, nested
+  into folders matching your actual folder structure — this uses the
+  exact same front-matter format as GitHub sync, so a ZIP export is
+  readable by the same tooling.
+- **Import** reads a ZIP (yours or one built by hand) and reconstructs
+  folders from each file's `folder:` front-matter field, falling back to
+  the file's physical directory if that field is missing. Import is
+  **additive** (like JSON import) — it doesn't reset or delete anything
+  local; only the GitHub "Pull & reset" flow does that.
+
+## Smooth transitions
+
+Color and shadow changes (theme/palette switching, hover states, note
+selection) now animate instead of snapping instantly; modals fade and
+scale in; mobile tab switches fade in; note cards lift slightly on hover;
+TOC navigation smooth-scrolls. All of this respects
+`prefers-reduced-motion` — durations collapse to effectively zero if the
+OS setting is on.
+
 ## Theme
 
 The 🎨 **Theme** button in the sidebar opens a picker with two independent
 choices:
 
 - **Appearance** — System / Light / Dark, same as before.
+- **Text size** — Small / Medium / Large / X-Large. Scales font sizes
+  throughout the app (note list, editor, previews, modals — not just one
+  panel), so it works as a real accessibility control, not a cosmetic one.
 - **Palette** — five color themes, each with its own light and dark
   variant: **Ledger** (the original warm ochre/teal/clay), **Slate**
   (cool blue-gray), **Forest** (earthy green), **Rosewood** (warm
   brick/terracotta), and **Ink & Paper** (monochrome, high contrast).
 
-Both choices persist independently (`localStorage`), so e.g. Forest +
-Dark stays Forest + Dark until you change either one.
+All three choices persist independently (`localStorage`).
 
 ## Skim view
 
