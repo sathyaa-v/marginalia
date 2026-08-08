@@ -1,6 +1,6 @@
 // sw.js — caches the app shell so the notebook works fully offline (FR-25/27).
 // Bump CACHE_NAME whenever shipped files change to invalidate old caches.
-const CACHE_NAME = 'notes-app-shell-v7';
+const CACHE_NAME = 'notes-app-shell-v8';
 
 const SHELL_FILES = [
   './',
@@ -13,6 +13,7 @@ const SHELL_FILES = [
   './js/github.js',
   './js/webrtc.js',
   './js/editor-helpers.js',
+  './js/quill.js',
   './icons/icon.svg',
 ];
 

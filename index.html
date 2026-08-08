@@ -11,7 +11,7 @@
 <!-- NFR-03: no third-party analytics; only pinned CDN font/markdown assets allowed. -->
 <meta http-equiv="Content-Security-Policy" content="
   default-src 'self';
-  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net;
   font-src https://fonts.gstatic.com;
   script-src 'self' https://cdn.jsdelivr.net;
   img-src 'self' data: https:;
@@ -25,6 +25,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+<link href="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.snow.css" rel="stylesheet" />
 
 <link rel="stylesheet" href="css/styles.css" />
 </head>
@@ -119,7 +121,14 @@
         <span class="list-title" id="list-title">All notes</span>
         <div style="display:flex; gap:6px;">
           <button class="icon-btn" id="btn-skim-toggle" title="Skim view — show full formatting" aria-label="Toggle skim view">📖</button>
-          <button class="new-note-btn" id="btn-new-note">+ New</button>
+          <div class="new-note-group">
+            <button class="new-note-btn" id="btn-new-note">+ New</button>
+            <button class="new-note-btn new-note-btn__caret" id="btn-new-note-caret" aria-label="Choose editor type" aria-haspopup="true">▾</button>
+            <div class="new-note-menu" id="new-note-menu" hidden>
+              <button data-editor-type="quill" type="button">✒ Rich text (Quill)</button>
+              <button data-editor-type="markdown" type="button">▤ Markdown</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -154,6 +163,7 @@
           <textarea class="content-textarea" id="note-content" placeholder="Start writing in Markdown…"></textarea>
           <div class="content-preview" id="note-preview" style="display:none;"></div>
         </div>
+        <div class="quill-editor" id="quill-editor" style="display:none;"></div>
       </div>
     </div>
   </section>
@@ -185,6 +195,7 @@
 <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/highlight.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/quill@1.3.7/dist/quill.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js" defer></script>
 <script type="module" src="js/app.js"></script>
 </body>

@@ -81,6 +81,47 @@ syntax (headings, emphasis, lists, blocks, links/media, tables). Tapping
 an item inserts it at your cursor — or wraps your current selection for
 things like bold/italic/inline code/links, same as the keyboard shortcuts.
 
+## Dual editor mode: Quill (rich text) or Markdown
+
+Every note now has an `editorType`, chosen once at creation and fixed for
+that note's lifetime (switching an existing note's type isn't supported —
+matches the requirements doc's explicit scope call).
+
+- **New notes default to Quill** (rich text, WYSIWYG) — just click **+
+  New**.
+- To create a **Markdown** note instead, click the small **▾** next to
+  **+ New** and choose it from the dropdown.
+- Opening any note automatically loads the matching editor — Quill notes
+  show the Quill toolbar and WYSIWYG surface; Markdown notes show the
+  familiar textarea (with preview toggle and syntax reference, which are
+  hidden for Quill notes since Quill's own toolbar already covers that).
+- Quill content is stored as **Delta (JSON)**, not converted to Markdown,
+  in IndexedDB and on every local save — verified by reading straight
+  from IndexedDB in testing rather than trusting the code by inspection.
+- Quill is loaded via a pinned CDN `<script>` tag
+  (`quill@1.3.7`), consistent with the rest of the stack — no bundler.
+
+**Scope note — what's actually wired up vs. not:**
+
+- **Implemented:** the core editor experience (FR-54–FR-58, this pass) —
+  type picker, Quill-by-default, CDN loading, Delta storage, correct
+  editor auto-loading. Also wired: Quill's built-in syntax highlighting
+  via the shared highlight.js instance (FR-59), search indexing against
+  Quill's extracted plain text instead of raw Delta JSON (FR-60),
+  skim-view rendering of Quill notes via Quill's own renderer (FR-61),
+  and Markdown ZIP / single-note export converting Quill notes to
+  Markdown at export time only — local storage always stays Delta JSON
+  (FR-62).
+- **Not yet built:** GitHub sync for Quill notes — committing Delta as
+  `.quill.json`, a companion read-only `notes-html/*.html` snapshot, and
+  the associated pull/stale-file handling (FR-63–FR-68). The sync adapter
+  (`js/github.js`) already has the machinery for this (`saveNotes`
+  accepts a `renderQuillHtml` callback), but the app doesn't call it yet
+  — pushing a Quill note to GitHub right now will write its Delta JSON
+  file but silently skip the HTML snapshot.
+
+Full detail in `NOTES-APP-REQUIREMENTS.md` §3.2.1.
+
 ## Editor improvements (behavior only — same textarea + preview layout)
 
 - **Sanitized preview.** Rendered Markdown now goes through DOMPurify
