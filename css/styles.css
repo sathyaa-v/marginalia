@@ -355,6 +355,7 @@ a { color: var(--accent-2); }
   font-family: var(--font-display);
   font-size: calc(15px * var(--font-scale)); font-weight: 600;
 }
+.new-note-group { position: relative; display: flex; }
 .new-note-btn {
   border: 1px solid var(--ink);
   background: var(--ink);
@@ -366,6 +367,23 @@ a { color: var(--accent-2); }
   font-family: var(--font-mono);
 }
 .new-note-btn:hover { background: var(--accent-2); border-color: var(--accent-2); }
+.new-note-group .new-note-btn:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+.new-note-btn__caret {
+  border-radius: 0 var(--radius) var(--radius) 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.25);
+  padding: 6px 8px;
+}
+.new-note-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 20;
+  background: var(--surface-raised); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); min-width: 160px; padding: 4px;
+}
+.new-note-menu button {
+  display: block; width: 100%; text-align: left; border: none; background: none;
+  padding: 7px 10px; border-radius: var(--radius); cursor: pointer;
+  font-size: calc(12.5px * var(--font-scale)); color: var(--ink); font-family: var(--font-body);
+}
+.new-note-menu button:hover { background: var(--paper); }
 
 .note-list {
   overflow-y: auto;
@@ -651,6 +669,54 @@ a { color: var(--accent-2); }
 .content-preview .hljs-deletion, .note-card__full-preview .hljs-deletion { color: var(--danger); }
 .content-preview .hljs-emphasis, .note-card__full-preview .hljs-emphasis { font-style: italic; }
 .content-preview .hljs-strong, .note-card__full-preview .hljs-strong { font-weight: 700; }
+
+/* ---------------------------------------------------------------------
+   Quill editor (FR-56/58) — theme the stock "snow" toolbar/editor to
+   match the app's tokens instead of leaving Quill's default white/black.
+--------------------------------------------------------------------- */
+.quill-editor { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.quill-editor .ql-toolbar.ql-snow {
+  border: none;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 40px;
+  background: var(--surface);
+}
+.quill-editor .ql-container.ql-snow { border: none; }
+.quill-editor .ql-editor {
+  font-family: var(--font-body);
+  font-size: calc(15px * var(--font-scale));
+  line-height: 1.7;
+  color: var(--ink);
+  padding: 20px 40px 60px;
+}
+.quill-editor .ql-editor.ql-blank::before { color: var(--ink-faint); font-style: normal; }
+.quill-editor .ql-editor h1, .quill-editor .ql-editor h2, .quill-editor .ql-editor h3 { font-family: var(--font-display); }
+.quill-editor .ql-editor pre.ql-syntax {
+  background: var(--paper); color: var(--ink); border-radius: var(--radius);
+  padding: 12px; font-family: var(--font-mono); font-size: calc(13px * var(--font-scale));
+}
+.quill-editor .ql-editor blockquote { border-left: 2px solid var(--accent-2); color: var(--ink-soft); }
+.quill-editor .ql-editor a { color: var(--accent-2); }
+.quill-editor .ql-snow .ql-stroke { stroke: var(--ink-soft); }
+.quill-editor .ql-snow .ql-fill { fill: var(--ink-soft); }
+.quill-editor .ql-snow .ql-picker { color: var(--ink-soft); }
+.quill-editor .ql-snow.ql-toolbar button:hover .ql-stroke,
+.quill-editor .ql-snow.ql-toolbar button.ql-active .ql-stroke { stroke: var(--accent-2); }
+.quill-editor .ql-snow.ql-toolbar button:hover .ql-fill,
+.quill-editor .ql-snow.ql-toolbar button.ql-active .ql-fill { fill: var(--accent-2); }
+.quill-editor .ql-snow .ql-picker-options {
+  background: var(--surface-raised); border-color: var(--line) !important; box-shadow: var(--shadow);
+}
+.quill-editor .ql-snow .ql-tooltip {
+  background: var(--surface-raised); border-color: var(--line); color: var(--ink); box-shadow: var(--shadow);
+}
+.quill-editor .ql-snow .ql-tooltip input[type='text'] {
+  background: var(--paper); color: var(--ink); border-color: var(--line);
+}
+@media (max-width: 900px) {
+  .quill-editor .ql-toolbar.ql-snow { padding: 8px 12px; }
+  .quill-editor .ql-editor { padding: 16px 16px 60px; }
+}
 
 .editor-placeholder {
   display: flex; align-items: center; justify-content: center;
