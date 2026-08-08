@@ -3,6 +3,15 @@ import { searchNotes } from './search.js';
 import { GitHubSync, noteToMarkdown, folderDisplayPath, reconstructFromMarkdownFiles } from './github.js';
 import { ShareSession } from './webrtc.js';
 import {
+  createEmptyDeltaJson,
+  mountEditor as mountQuillEditor,
+  setDelta as setQuillDelta,
+  getDeltaJson as getQuillDeltaJson,
+  extractPlainText as extractQuillPlainText,
+  renderDeltaToHtml,
+  deltaToMarkdown,
+} from './quill.js';
+import {
   handleTab,
   handleEnterList,
   toggleWrap,
@@ -77,6 +86,12 @@ function activeNotes() {
   return state.notes.filter((n) => !n.deleted);
 }
 
+// FR-60: quill notes store a Delta JSON string as `content` — search
+// against its extracted plain text, not the raw JSON.
+function getSearchableText(note) {
+  return note.editorType === 'quill' ? extractQuillPlainText(note.content) : note.content;
+}
+
 function visibleNotes() {
   let list = activeNotes();
 
@@ -94,7 +109,7 @@ function visibleNotes() {
 
   let results;
   if (state.query.trim()) {
-    results = searchNotes(list, state.query);
+    results = searchNotes(list, state.query, getSearchableText);
   } else {
     results = list
       .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
@@ -231,22 +246,30 @@ function renderNoteCardsInto(containerId, results, skim) {
     const tagsHtml = (note.tags || []).slice(0, 6).map((t) => `<span class="tag-pill">#${escapeHtml(t)}</span>`).join('');
 
     if (skim) {
-      const rawHtml = window.marked ? window.marked.parse(note.content || '') : escapeHtml(note.content || '');
-      const cleanHtml = window.DOMPurify ? window.DOMPurify.sanitize(rawHtml) : rawHtml;
+      let cleanHtml;
+      if (note.editorType === 'quill') {
+        // Quill's syntax module bakes hljs highlighting directly into the
+        // rendered HTML, so no separate highlightElement pass is needed here.
+        cleanHtml = renderDeltaToHtml(note.content);
+      } else {
+        const rawHtml = window.marked ? window.marked.parse(note.content || '') : escapeHtml(note.content || '');
+        cleanHtml = window.DOMPurify ? window.DOMPurify.sanitize(rawHtml) : rawHtml;
+      }
       card.innerHTML = `
         <div class="note-card__tab">${tabLabel} · ${relativeTime(note.updatedAt)}</div>
         <div class="note-card__title">${titleHtml}</div>
         <div class="note-card__full-preview">${cleanHtml}</div>
         <div class="note-card__meta">${tagsHtml}</div>
       `;
-      if (window.hljs) {
+      if (note.editorType !== 'quill' && window.hljs) {
         card.querySelectorAll('pre code').forEach((block) => window.hljs.highlightElement(block));
       }
     } else {
+      const fallbackText = note.editorType === 'quill' ? extractQuillPlainText(note.content) : (note.content || '');
       card.innerHTML = `
         <div class="note-card__tab">${tabLabel} · ${relativeTime(note.updatedAt)}</div>
         <div class="note-card__title">${titleHtml}</div>
-        <div class="note-card__snippet">${snippet || escapeHtml((note.content || '').slice(0, 140))}</div>
+        <div class="note-card__snippet">${snippet || escapeHtml(fallbackText.slice(0, 140))}</div>
         <div class="note-card__meta">${tagsHtml}</div>
       `;
     }
@@ -269,6 +292,27 @@ function viewLabel() {
   return 'Notes';
 }
 
+// Lazily-mounted, reused Quill instance (FR-58) — mounting once and
+// swapping content via setDelta() avoids re-creating the toolbar/editor
+// (and its DOM listeners) every time a different Quill note is opened.
+let quillInstance = null;
+
+function ensureQuillEditor() {
+  if (quillInstance) return quillInstance;
+  quillInstance = mountQuillEditor(document.getElementById('quill-editor'));
+  quillInstance.on('text-change', (delta, oldDelta, source) => {
+    // Loading a note calls setDelta(..., 'silent') specifically so this
+    // handler only fires for actual user edits — otherwise just opening
+    // a Quill note would immediately re-save it and bump updatedAt.
+    if (source !== 'user') return;
+    const note = state.notes.find((n) => n.id === state.selectedNoteId);
+    if (!note || (note.editorType || 'markdown') !== 'quill') return;
+    updateSelectedNote({ content: getQuillDeltaJson(quillInstance) });
+    updateMetaRow(note);
+  });
+  return quillInstance;
+}
+
 function renderEditor() {
   const note = state.notes.find((n) => n.id === state.selectedNoteId);
   const empty = document.getElementById('editor-empty');
@@ -282,18 +326,48 @@ function renderEditor() {
   empty.style.display = 'none';
   content.style.display = 'flex';
 
+  // Notes created before dual-editor mode shipped have no editorType —
+  // treat those as Markdown (that's genuinely what their content is).
+  const isQuill = (note.editorType || 'markdown') === 'quill';
+
   document.getElementById('note-title').value = note.title || '';
-  document.getElementById('note-content').value = note.content || '';
   updateMetaRow(note);
 
   document.getElementById('btn-pin').classList.toggle('active', !!note.pinned);
   document.getElementById('btn-archive').classList.toggle('active', !!note.archived);
-  document.getElementById('btn-preview').classList.toggle('active', state.previewOn);
 
   renderTagRow(note);
-  renderPreview(note);
-  document.getElementById('content-area').classList.toggle('split', state.previewOn);
-  document.getElementById('note-preview').style.display = state.previewOn ? 'block' : 'none';
+
+  const textarea = document.getElementById('note-content');
+  const quillContainer = document.getElementById('quill-editor');
+  const previewEl = document.getElementById('note-preview');
+  const previewBtn = document.getElementById('btn-preview');
+  const syntaxBtn = document.getElementById('btn-syntax-help');
+
+  if (isQuill) {
+    // Quill IS the rendered view — no separate Markdown-preview toggle
+    // or syntax-insert panel makes sense here (Quill has its own toolbar).
+    textarea.style.display = 'none';
+    previewEl.style.display = 'none';
+    quillContainer.style.display = 'block';
+    previewBtn.style.display = 'none';
+    syntaxBtn.style.display = 'none';
+    document.getElementById('content-area').classList.remove('split');
+
+    const quill = ensureQuillEditor();
+    setQuillDelta(quill, note.content);
+  } else {
+    quillContainer.style.display = 'none';
+    previewBtn.style.display = '';
+    syntaxBtn.style.display = '';
+    textarea.style.display = 'block';
+    textarea.value = note.content || '';
+
+    previewBtn.classList.toggle('active', state.previewOn);
+    renderPreview(note);
+    document.getElementById('content-area').classList.toggle('split', state.previewOn);
+    previewEl.style.display = state.previewOn ? 'block' : 'none';
+  }
 }
 
 function renderTagRow(note) {
@@ -310,7 +384,9 @@ function renderTagRow(note) {
 }
 
 function updateMetaRow(note) {
-  const stats = wordStats(note.content);
+  const isQuill = (note.editorType || 'markdown') === 'quill';
+  const textForStats = isQuill ? extractQuillPlainText(note.content) : note.content;
+  const stats = wordStats(textForStats);
   const parts = [
     `created ${formatDate(note.createdAt)}`,
     `updated ${formatDate(note.updatedAt)}`,
@@ -400,12 +476,13 @@ async function selectNote(id) {
   renderAll();
 }
 
-async function createNote() {
+async function createNote(editorType = 'quill') {
   const folderId = state.view.startsWith('folder:') ? state.view.slice(7) : null;
   const note = {
     id: uuid(),
     title: '',
-    content: '',
+    editorType,
+    content: editorType === 'quill' ? createEmptyDeltaJson() : '',
     folderId,
     tags: state.view.startsWith('tag:') ? [state.view.slice(4)] : [],
     pinned: false,
@@ -658,7 +735,8 @@ function exportJSON() {
 function exportSingleNote() {
   const note = state.notes.find((n) => n.id === state.selectedNoteId);
   if (!note) return;
-  downloadFile(`${sanitizeFileName(note.title || 'untitled')}.md`, noteToMarkdown(note, state.folders), 'text/markdown');
+  const exportNote = note.editorType === 'quill' ? { ...note, content: deltaToMarkdown(note.content) } : note;
+  downloadFile(`${sanitizeFileName(note.title || 'untitled')}.md`, noteToMarkdown(exportNote, state.folders), 'text/markdown');
 }
 
 function downloadFile(filename, content, mime) {
@@ -719,7 +797,8 @@ async function exportMarkdownZip() {
       fullPath = dir ? `${dir}/${filename}` : filename;
     }
     usedPaths.add(fullPath);
-    zip.file(fullPath, noteToMarkdown(note, state.folders));
+    const exportNote = note.editorType === 'quill' ? { ...note, content: deltaToMarkdown(note.content) } : note;
+    zip.file(fullPath, noteToMarkdown(exportNote, state.folders));
   });
 
   const blob = await zip.generateAsync({ type: 'blob' });
@@ -748,6 +827,7 @@ async function importMarkdownZip(file) {
     const toSave = importedNotes.map((n) => ({
       id: uuid(),
       title: n.title,
+      editorType: n.editorType || 'markdown',
       content: n.content,
       folderId: n.folderId,
       tags: n.tags,
@@ -855,6 +935,7 @@ async function pullAndResetFromGitHub(cfg) {
     const toSave = remoteNotes.map((rn) => ({
       id: uuid(),
       title: rn.title,
+      editorType: rn.editorType || 'markdown',
       content: rn.content,
       folderId: rn.folderId,
       tags: rn.tags,
@@ -1530,7 +1611,22 @@ function wireGlobalEvents() {
   });
 
   document.getElementById('btn-add-folder').addEventListener('click', addFolder);
-  document.getElementById('btn-new-note').addEventListener('click', createNote);
+  document.getElementById('btn-new-note').addEventListener('click', () => createNote());
+  document.getElementById('btn-new-note-caret').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const menu = document.getElementById('new-note-menu');
+    menu.hidden = !menu.hidden;
+  });
+  document.querySelectorAll('#new-note-menu button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.getElementById('new-note-menu').hidden = true;
+      createNote(btn.dataset.editorType);
+    });
+  });
+  document.addEventListener('click', (e) => {
+    const menu = document.getElementById('new-note-menu');
+    if (!menu.hidden && !e.target.closest('.new-note-group')) menu.hidden = true;
+  });
   document.getElementById('btn-skim-toggle').addEventListener('click', () => {
     state.skimMode = !state.skimMode;
     document.getElementById('btn-skim-toggle').classList.toggle('active', state.skimMode);

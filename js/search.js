@@ -1,7 +1,8 @@
 // search.js — lightweight in-house search (FR-19: swap for MiniSearch past ~2k notes).
 // Good enough for NFR-01 (<100ms over 2,000 notes) via a simple scored substring match.
 
-export function searchNotes(notes, query) {
+export function searchNotes(notes, query, getContentText) {
+  const resolveContent = getContentText || ((note) => note.content);
   const q = query.trim().toLowerCase();
   if (!q) return notes.map((n) => ({ note: n, snippet: null }));
 
@@ -10,7 +11,8 @@ export function searchNotes(notes, query) {
 
   for (const note of notes) {
     const title = (note.title || '').toLowerCase();
-    const content = (note.content || '').toLowerCase();
+    const contentText = resolveContent(note) || '';
+    const content = contentText.toLowerCase();
     let score = 0;
     let matched = true;
 
@@ -26,7 +28,7 @@ export function searchNotes(notes, query) {
     }
 
     if (matched) {
-      results.push({ note, snippet: buildSnippet(note.content, terms), score });
+      results.push({ note, snippet: buildSnippet(contentText, terms), score });
     }
   }
 
