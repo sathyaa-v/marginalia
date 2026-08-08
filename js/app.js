@@ -1,6 +1,6 @@
 import { db, uuid, nowISO } from './db.js';
 import { searchNotes } from './search.js';
-import { GitHubSync } from './github.js';
+import { GitHubSync, noteToMarkdown, folderDisplayPath, reconstructFromMarkdownFiles } from './github.js';
 import { ShareSession } from './webrtc.js';
 import {
   handleTab,
@@ -332,9 +332,57 @@ function renderPreview(note) {
     if (window.hljs) {
       el.querySelectorAll('pre code').forEach((block) => window.hljs.highlightElement(block));
     }
+    renderTableOfContents(el);
   } else {
     el.textContent = note.content || '';
   }
+}
+
+// Auto-generated TOC for long notes (3+ headings) — collapsible, click to
+// smooth-scroll to that section within the preview.
+function renderTableOfContents(previewEl) {
+  const headings = previewEl.querySelectorAll('h1, h2, h3, h4, h5, h6');
+  if (headings.length < 3) return;
+
+  const seen = new Set();
+  const items = [];
+  headings.forEach((h) => {
+    const base = slugifyHeading(h.textContent) || 'section';
+    let slug = base;
+    let i = 2;
+    while (seen.has(slug)) slug = `${base}-${i++}`;
+    seen.add(slug);
+    h.id = slug;
+    items.push({ level: parseInt(h.tagName[1], 10), text: h.textContent, id: slug });
+  });
+
+  const minLevel = Math.min(...items.map((it) => it.level));
+  const toc = document.createElement('details');
+  toc.className = 'toc';
+  toc.open = true;
+  toc.innerHTML = `
+    <summary class="toc__summary">Contents</summary>
+    <nav class="toc__list">
+      ${items.map((it) => `<a class="toc__item toc__item--l${Math.min(5, it.level - minLevel)}" href="#${it.id}">${escapeHtml(it.text)}</a>`).join('')}
+    </nav>
+  `;
+  toc.querySelectorAll('.toc__item').forEach((a) => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      const target = previewEl.querySelector('#' + CSS.escape(a.getAttribute('href').slice(1)));
+      target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+  previewEl.insertBefore(toc, previewEl.firstChild);
+}
+
+function slugifyHeading(text) {
+  return (text || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .slice(0, 60);
 }
 
 // ---------------------------------------------------------------------
@@ -610,12 +658,11 @@ function exportJSON() {
 function exportSingleNote() {
   const note = state.notes.find((n) => n.id === state.selectedNoteId);
   if (!note) return;
-  const fm = `---\ntitle: ${JSON.stringify(note.title || 'Untitled')}\ntags: [${(note.tags || []).join(', ')}]\npinned: ${!!note.pinned}\ncreated: ${note.createdAt}\nupdated: ${note.updatedAt}\n---\n\n`;
-  downloadFile(`${(note.title || 'untitled').replace(/\s+/g, '-').toLowerCase()}.md`, fm + note.content, 'text/markdown');
+  downloadFile(`${sanitizeFileName(note.title || 'untitled')}.md`, noteToMarkdown(note, state.folders), 'text/markdown');
 }
 
 function downloadFile(filename, content, mime) {
-  const blob = new Blob([content], { type: mime });
+  const blob = content instanceof Blob ? content : new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -638,6 +685,85 @@ async function importJSONFile(file) {
     toast(`Imported ${notes.length} note(s)`);
   } catch (err) {
     toast('Import failed: ' + err.message, true);
+  }
+}
+
+function sanitizeFileName(name) {
+  return (name || 'untitled').replace(/[/\\:*?"<>|]/g, '-').trim() || 'untitled';
+}
+
+function folderZipPath(folders, folderId) {
+  const parts = [];
+  let current = folderId ? folders.find((f) => f.id === folderId) : null;
+  while (current) {
+    parts.unshift(sanitizeFileName(current.name));
+    current = current.parentId ? folders.find((f) => f.id === current.parentId) : null;
+  }
+  return parts.join('/');
+}
+
+async function exportMarkdownZip() {
+  if (!window.JSZip) { toast('ZIP library failed to load — check your connection and try again.', true); return; }
+  const zip = new window.JSZip();
+  const notes = activeNotes();
+  const usedPaths = new Set();
+
+  notes.forEach((note) => {
+    const dir = folderZipPath(state.folders, note.folderId);
+    const base = sanitizeFileName(note.title || 'untitled');
+    let filename = `${base}.md`;
+    let fullPath = dir ? `${dir}/${filename}` : filename;
+    let i = 2;
+    while (usedPaths.has(fullPath)) {
+      filename = `${base}-${i++}.md`;
+      fullPath = dir ? `${dir}/${filename}` : filename;
+    }
+    usedPaths.add(fullPath);
+    zip.file(fullPath, noteToMarkdown(note, state.folders));
+  });
+
+  const blob = await zip.generateAsync({ type: 'blob' });
+  downloadFile(`notes-export-${dateStamp()}.zip`, blob);
+  db.setMeta('lastExportAt', nowISO());
+  toast(`Exported ${notes.length} note(s) as Markdown ZIP`);
+}
+
+async function importMarkdownZip(file) {
+  if (!window.JSZip) { toast('ZIP library failed to load — check your connection and try again.', true); return; }
+  try {
+    const zip = await window.JSZip.loadAsync(file);
+    const entries = Object.values(zip.files).filter((f) => !f.dir && f.name.toLowerCase().endsWith('.md'));
+    const fileInputs = [];
+    for (const entry of entries) {
+      const raw = await entry.async('string');
+      const parts = entry.name.split('/').filter(Boolean);
+      const filename = parts.pop();
+      fileInputs.push({ relDir: parts, filename, raw });
+    }
+
+    // Additive import (like JSON import), not a reset — only the GitHub
+    // "Pull & reset" flow replaces local data wholesale.
+    const { notes: importedNotes, folders: importedFolders } = reconstructFromMarkdownFiles(fileInputs);
+    await db.bulkPut('folders', importedFolders);
+    const toSave = importedNotes.map((n) => ({
+      id: uuid(),
+      title: n.title,
+      content: n.content,
+      folderId: n.folderId,
+      tags: n.tags,
+      pinned: n.pinned,
+      archived: false,
+      deleted: false,
+      createdAt: n.createdAt || nowISO(),
+      updatedAt: n.updatedAt || nowISO(),
+    }));
+    await db.bulkPut('notes', toSave);
+    state.notes = await db.getAll('notes');
+    state.folders = await db.getAll('folders');
+    renderAll();
+    toast(`Imported ${toSave.length} note(s) into ${importedFolders.length} folder(s)`);
+  } catch (err) {
+    toast('ZIP import failed: ' + err.message, true);
   }
 }
 
@@ -1464,6 +1590,12 @@ function wireGlobalEvents() {
   document.getElementById('btn-import').addEventListener('click', () => document.getElementById('import-file').click());
   document.getElementById('import-file').addEventListener('change', (e) => {
     if (e.target.files[0]) importJSONFile(e.target.files[0]);
+    e.target.value = '';
+  });
+  document.getElementById('btn-export-zip').addEventListener('click', exportMarkdownZip);
+  document.getElementById('btn-import-zip').addEventListener('click', () => document.getElementById('import-zip-file').click());
+  document.getElementById('import-zip-file').addEventListener('change', (e) => {
+    if (e.target.files[0]) importMarkdownZip(e.target.files[0]);
     e.target.value = '';
   });
   document.getElementById('btn-github').addEventListener('click', openGitHubModal);

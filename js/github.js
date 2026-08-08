@@ -28,7 +28,7 @@ function folderPath(folders, folderId) {
 // Human-readable version (original names, not slugged) — stored in
 // front-matter so a pull can rebuild the exact folder name/hierarchy
 // instead of guessing it back from a lossy slug in the directory path.
-function folderDisplayPath(folders, folderId) {
+export function folderDisplayPath(folders, folderId) {
   const parts = [];
   let current = folderId ? folders.find((f) => f.id === folderId) : null;
   while (current) {
@@ -38,7 +38,7 @@ function folderDisplayPath(folders, folderId) {
   return parts.join('/');
 }
 
-function noteToMarkdown(note, folders) {
+export function noteToMarkdown(note, folders) {
   const fm = [
     '---',
     `title: ${JSON.stringify(note.title || 'Untitled')}`,
@@ -87,6 +87,51 @@ function parseMarkdown(raw) {
     }
   });
   return { meta, content: content.replace(/^\n/, '') };
+}
+
+/**
+ * Shared reconstruction logic used by BOTH GitHub pull and the local ZIP
+ * import (spec §3.7/§6.2) — one code path, so the two stay in sync
+ * automatically instead of risking drift between two hand-rolled folder
+ * rebuilders. Folder identity comes from each note's `folder:`
+ * front-matter field (human-readable, exact names) when present;
+ * otherwise it falls back to the physical directory the file was found
+ * in (for files added by hand, with no front-matter).
+ *
+ * @param {Array<{relDir: string[], filename: string, raw: string, sourcePath?: string, sourceSha?: string}>} files
+ * @returns {{notes: object[], folders: object[]}}
+ */
+export function reconstructFromMarkdownFiles(files) {
+  const foldersByPath = new Map();
+  const ensureFolder = (segments) => {
+    if (!segments || segments.length === 0) return null;
+    const key = segments.join('/');
+    if (foldersByPath.has(key)) return foldersByPath.get(key).id;
+    const parentId = segments.length > 1 ? ensureFolder(segments.slice(0, -1)) : null;
+    const folder = { id: uuid(), name: segments[segments.length - 1], parentId, createdAt: nowISO(), updatedAt: nowISO() };
+    foldersByPath.set(key, folder);
+    return folder.id;
+  };
+
+  const notes = [];
+  for (const file of files) {
+    const { meta, content } = parseMarkdown(file.raw);
+    const segments = meta.folder ? meta.folder.split('/').filter(Boolean) : (file.relDir || []);
+    const folderId = ensureFolder(segments);
+
+    notes.push({
+      title: meta.title || file.filename.replace(/\.md$/, ''),
+      content,
+      tags: meta.tags || [],
+      pinned: !!meta.pinned,
+      folderId,
+      createdAt: meta.created,
+      updatedAt: meta.updated,
+      githubPath: file.sourcePath,
+      githubSha: file.sourceSha,
+    });
+  }
+  return { notes, folders: [...foldersByPath.values()] };
 }
 
 export class GitHubSync {
@@ -272,51 +317,18 @@ export class GitHubSync {
     const entries = await res.json();
     const files = await this._collectMarkdownFiles(entries);
 
-    // path (joined by '/') -> folder object, built as we go so nested
-    // folders are only created once and share the same parentId chain.
-    const foldersByPath = new Map();
-    const ensureFolder = (segments) => {
-      if (!segments || segments.length === 0) return null;
-      const key = segments.join('/');
-      if (foldersByPath.has(key)) return foldersByPath.get(key).id;
-      const parentId = segments.length > 1 ? ensureFolder(segments.slice(0, -1)) : null;
-      const folder = { id: uuid(), name: segments[segments.length - 1], parentId, createdAt: nowISO(), updatedAt: nowISO() };
-      foldersByPath.set(key, folder);
-      return folder.id;
-    };
-
-    const notes = [];
+    const fileInputs = [];
     for (const file of files) {
       const fileRes = await fetch(file.url, { headers: this.headers() });
       if (!fileRes.ok) continue;
       const fileData = await fileRes.json();
       const raw = decodeURIComponent(escape(atob(fileData.content.replace(/\n/g, ''))));
-      const { meta, content } = parseMarkdown(raw);
-
-      let segments;
-      if (meta.folder) {
-        segments = meta.folder.split('/').filter(Boolean);
-      } else {
-        // Fallback: derive from the file's own directory under basePath.
-        const rel = file.path.startsWith(this.basePath + '/') ? file.path.slice(this.basePath.length + 1) : file.path;
-        segments = rel.split('/');
-        segments.pop(); // drop the filename itself
-      }
-      const folderId = ensureFolder(segments);
-
-      notes.push({
-        title: meta.title || file.name.replace(/\.md$/, ''),
-        content,
-        tags: meta.tags || [],
-        pinned: !!meta.pinned,
-        folderId,
-        createdAt: meta.created,
-        updatedAt: meta.updated,
-        githubPath: file.path,
-        githubSha: fileData.sha,
-      });
+      const rel = file.path.startsWith(this.basePath + '/') ? file.path.slice(this.basePath.length + 1) : file.path;
+      const segs = rel.split('/');
+      const filename = segs.pop();
+      fileInputs.push({ relDir: segs, filename, raw, sourcePath: file.path, sourceSha: fileData.sha });
     }
-    return { notes, folders: [...foldersByPath.values()] };
+    return reconstructFromMarkdownFiles(fileInputs);
   }
 
   async _collectMarkdownFiles(entries, acc = []) {
