@@ -57,7 +57,9 @@ async function boot() {
   applyFontSize();
   applyFontFamily();
   applyDensity();
-  await requestPersistence();
+  // Do not block first paint on storage persistence or network sync checks.
+  // The editor/list must become interactive before any GitHub work starts.
+  requestPersistence();
   state.notes = await db.getAll('notes');
   state.folders = await db.getAll('folders');
   wireGlobalEvents();
@@ -67,7 +69,14 @@ async function boot() {
   window.addEventListener('offline', updateOnlineStatus);
   updateOnlineStatus();
   maybeShowExportReminder();
-  checkGitHubSyncStatus();
+  // GitHub comparison is intentionally deferred until after the first paint.
+  // A large repository/tree must never make the initial page feel frozen.
+  const startSyncCheck = () => checkGitHubSyncStatus();
+  if ('requestIdleCallback' in window) {
+    window.requestIdleCallback(startSyncCheck, { timeout: 1200 });
+  } else {
+    setTimeout(startSyncCheck, 600);
+  }
 }
 
 async function requestPersistence() {
@@ -1159,13 +1168,17 @@ async function getGitHubSyncDiff(cfg) {
     const localSha = localMap.get(path)?.sha || null;
     const remoteSha = remoteMap.get(path) || null;
     const baseSha = baseline.get(path) || null;
+    const same = localSha === remoteSha;
+    if (same) continue;
+
+    // With no sync baseline (first connection), compare the two actual
+    // hashes directly. Do not mark both sides as changed merely because
+    // both files exist — that caused a false conflict on first load.
     const lChanged = baseSha ? localSha !== baseSha : !!localSha;
     const rChanged = baseSha ? remoteSha !== baseSha : !!remoteSha;
     if (lChanged) localChanged = true;
     if (rChanged) remoteChanged = true;
-    if (localSha !== remoteSha) {
-      files.push({ path, localSha, remoteSha, baseSha, conflict: lChanged && rChanged });
-    }
+    files.push({ path, localSha, remoteSha, baseSha, conflict: lChanged && rChanged });
   }
   return { files, localChanged, remoteChanged, conflict: localChanged && remoteChanged };
 }
@@ -1177,7 +1190,12 @@ async function checkGitHubSyncStatus() {
     const diff = await getGitHubSyncDiff(cfg);
     pendingSyncDiff = diff;
     showSyncDiffStatus(diff);
-    if (diff.conflict && diff.files.length) showSyncConflictModal(cfg, diff);
+    // Keep the initial page interactive. The banner opens the full conflict
+    // comparison only when the user explicitly asks to sync.
+    if (diff.conflict && diff.files.length) {
+      const text = document.getElementById('sync-banner-text');
+      if (text) text.textContent += ' Review the file list before choosing a direction.';
+    }
   } catch {
     // Silent on load; the sync modal remains available for explicit checks.
   }
@@ -1798,6 +1816,26 @@ function applyMobileTab() {
   });
 }
 
+function openAllFilesPreviewModal() {
+  const notes = activeNotes().slice().sort((a, b) => {
+    const at = (a.title || 'Untitled').toLowerCase();
+    const bt = (b.title || 'Untitled').toLowerCase();
+    return at.localeCompare(bt);
+  });
+  const results = notes.map((note) => ({ note, snippet: '' }));
+  renderModal(`
+    <div class="modal__header">
+      <span class="modal__title">Preview all files</span>
+      <button class="icon-btn" id="modal-close" aria-label="Close">✕</button>
+    </div>
+    <div class="modal__body all-files-preview-body">
+      <div class="field-hint" style="margin-bottom:12px;">${notes.length} file(s)</div>
+      <div id="all-files-preview-list" class="all-files-preview-list"></div>
+    </div>`);
+  document.getElementById('modal-close').addEventListener('click', closeModal);
+  renderNoteCardsInto('all-files-preview-list', results, true);
+}
+
 // ---------------------------------------------------------------------
 // Event wiring
 // ---------------------------------------------------------------------
@@ -1808,6 +1846,7 @@ function wireGlobalEvents() {
 
   document.getElementById('btn-add-folder').addEventListener('click', addFolder);
   document.getElementById('btn-new-note').addEventListener('click', () => createNote());
+  document.getElementById('btn-preview-all').addEventListener('click', openAllFilesPreviewModal);
   document.getElementById('btn-new-note-caret').addEventListener('click', (e) => {
     e.stopPropagation();
     const menu = document.getElementById('new-note-menu');

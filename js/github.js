@@ -275,15 +275,21 @@ export class GitHubSync {
     return c.commit?.committer?.date || c.commit?.author?.date || null;
   }
 
-  async getRemoteFileManifest() {
-    const branchRes = await fetch(`${API}/repos/${this.owner}/${this.repo}`, { headers: this.headers() });
+  async getRemoteFileManifest({ timeoutMs = 12000 } = {}) {
+    // The initial sync check is best-effort and must not leave the page
+    // waiting forever on a slow/offline GitHub connection.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const request = (url, options = {}) => fetch(url, { ...options, signal: controller.signal });
+    try {
+      const branchRes = await request(`${API}/repos/${this.owner}/${this.repo}`, { headers: this.headers() });
     if (!branchRes.ok) throw new Error(`Repo lookup failed: ${await this._err(branchRes)}`);
     const repoData = await branchRes.json();
     const branch = repoData.default_branch;
-    const refRes = await fetch(`${API}/repos/${this.owner}/${this.repo}/git/ref/heads/${branch}`, { headers: this.headers() });
+    const refRes = await request(`${API}/repos/${this.owner}/${this.repo}/git/ref/heads/${branch}`, { headers: this.headers() });
     if (!refRes.ok) throw new Error(`Ref lookup failed: ${await this._err(refRes)}`);
     const refData = await refRes.json();
-    const treeRes = await fetch(`${API}/repos/${this.owner}/${this.repo}/git/trees/${refData.object.sha}?recursive=1`, { headers: this.headers() });
+    const treeRes = await request(`${API}/repos/${this.owner}/${this.repo}/git/trees/${refData.object.sha}?recursive=1`, { headers: this.headers() });
     if (!treeRes.ok) throw new Error(`Tree lookup failed: ${await this._err(treeRes)}`);
     const tree = await treeRes.json();
     const map = new Map();
@@ -291,7 +297,13 @@ export class GitHubSync {
       if (entry.type !== 'blob') return;
       if (entry.path.startsWith(this.basePath + '/') || entry.path.startsWith('notes-html/')) map.set(entry.path, entry.sha);
     });
-    return map;
+      return map;
+    } catch (err) {
+      if (err?.name === 'AbortError') throw new Error('GitHub sync check timed out; the page is still available.');
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
