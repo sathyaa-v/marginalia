@@ -40,6 +40,8 @@ const state = {
   theme: localStorage.getItem('theme') || 'system',
   palette: localStorage.getItem('palette') || 'default',
   fontSize: localStorage.getItem('fontSize') || 'medium',
+  fontFamily: localStorage.getItem('fontFamily') || 'plex',
+  density: localStorage.getItem('density') || 'comfortable',
   mobileTab: 'list',
 };
 
@@ -53,6 +55,8 @@ async function boot() {
   applyTheme();
   applyPalette();
   applyFontSize();
+  applyFontFamily();
+  applyDensity();
   await requestPersistence();
   state.notes = await db.getAll('notes');
   state.folders = await db.getAll('folders');
@@ -367,6 +371,7 @@ function renderEditor() {
     setQuillDelta(quill, note.content);
   } else {
     quillContainer.style.display = 'none';
+    if (quillInstance) quillInstance.root.blur();
     contentArea.style.display = 'grid';
     previewBtn.style.display = '';
     syntaxBtn.style.display = '';
@@ -660,6 +665,22 @@ function applyFontSize() {
   updateThemeLabel();
 }
 
+const FONT_FAMILIES = [
+  { id: 'plex', label: 'IBM Plex Sans', body: "'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif", display: "'Fraunces', Georgia, serif" },
+  { id: 'system', label: 'System Sans', body: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif', display: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' },
+  { id: 'serif', label: 'Georgia Serif', body: 'Georgia, "Times New Roman", serif', display: 'Georgia, "Times New Roman", serif' },
+  { id: 'mono', label: 'IBM Plex Mono', body: "'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace", display: "'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace" },
+];
+function applyFontFamily() {
+  const font = FONT_FAMILIES.find((f) => f.id === state.fontFamily) || FONT_FAMILIES[0];
+  document.body.setAttribute('data-font-family', font.id);
+  document.body.style.setProperty('--font-body', font.body);
+  document.body.style.setProperty('--font-display', font.display);
+}
+function applyDensity() {
+  document.body.setAttribute('data-density', state.density);
+}
+
 function updateThemeLabel() {
   const modeLabel = { system: 'System', light: 'Light', dark: 'Dark' }[state.theme];
   const paletteLabel = (PALETTES.find((p) => p.id === state.palette) || PALETTES[0]).label;
@@ -683,6 +704,15 @@ function openThemeModal() {
       <div class="field-hint" style="margin-bottom:8px;">Text size</div>
       <div class="mode-toggle" style="margin-bottom:20px;">
         ${FONT_SIZES.map((f) => `<label><input type="radio" name="font-size" value="${f.id}" ${state.fontSize === f.id ? 'checked' : ''}/> ${escapeHtml(f.label)}</label>`).join('')}
+      </div>
+      <div class="field-hint" style="margin-bottom:8px;">Overall font</div>
+      <div class="mode-toggle" style="margin-bottom:20px;">
+        ${FONT_FAMILIES.map((f) => `<label><input type="radio" name="font-family" value="${f.id}" ${state.fontFamily === f.id ? 'checked' : ''}/> ${escapeHtml(f.label)}</label>`).join('')}
+      </div>
+      <div class="field-hint" style="margin-bottom:8px;">Interface density</div>
+      <div class="mode-toggle" style="margin-bottom:20px;">
+        <label><input type="radio" name="density" value="comfortable" ${state.density === 'comfortable' ? 'checked' : ''}/> Comfortable</label>
+        <label><input type="radio" name="density" value="compact" ${state.density === 'compact' ? 'checked' : ''}/> Compact</label>
       </div>
       <div class="field-hint" style="margin-bottom:8px;">Palette</div>
       <div class="palette-grid">
@@ -714,6 +744,13 @@ function openThemeModal() {
       localStorage.setItem('fontSize', state.fontSize);
       applyFontSize();
     });
+  });
+
+  document.querySelectorAll('input[name="font-family"]').forEach((r) => {
+    r.addEventListener('change', (e) => { state.fontFamily = e.target.value; localStorage.setItem('fontFamily', state.fontFamily); applyFontFamily(); });
+  });
+  document.querySelectorAll('input[name="density"]').forEach((r) => {
+    r.addEventListener('change', (e) => { state.density = e.target.value; localStorage.setItem('density', state.density); applyDensity(); });
   });
 
   document.querySelectorAll('.palette-swatch').forEach((btn) => {
@@ -1095,27 +1132,41 @@ function hideSyncBanner() {
   document.getElementById('sync-banner').style.display = 'none';
 }
 
+let syncBusy = false;
+
+function setSyncBusy(busy, operation = '') {
+  syncBusy = busy;
+  const buttons = [document.getElementById('sync-banner-push'), document.getElementById('sync-banner-pull'), document.getElementById('gh-save'), document.getElementById('gh-pull')].filter(Boolean);
+  buttons.forEach((button) => {
+    button.disabled = busy;
+    button.classList.toggle('is-syncing', busy);
+    if (busy) {
+      button.dataset.syncLabel ||= button.textContent;
+      button.innerHTML = `<span class="sync-spinner" aria-hidden="true"></span>${operation || 'Syncing…'}`;
+    } else if (button.dataset.syncLabel) {
+      button.textContent = button.dataset.syncLabel;
+      delete button.dataset.syncLabel;
+    }
+  });
+}
+
 function wireSyncBanner() {
   document.getElementById('sync-banner-push').addEventListener('click', async () => {
     const cfg = getSavedGitHubConfig();
-    if (!cfg) return;
-    toast('Pushing to GitHub…');
-    const result = await pushToGitHub(cfg);
-    toast(result.message, !result.ok);
-    if (result.ok) hideSyncBanner();
+    if (!cfg || syncBusy) return;
+    setSyncBusy(true, 'Pushing…');
+    try { const result = await pushToGitHub(cfg); toast(result.message, !result.ok); if (result.ok) hideSyncBanner(); }
+    finally { setSyncBusy(false); }
   });
-
   document.getElementById('sync-banner-pull').addEventListener('click', async () => {
     const cfg = getSavedGitHubConfig();
-    if (!cfg) return;
-    if (!confirm('This replaces all local notes with what\u2019s in GitHub. Continue?')) return;
-    toast('Pulling from GitHub…');
-    const result = await pullAndResetFromGitHub(cfg);
-    toast(result.message, !result.ok);
-    if (result.ok) hideSyncBanner();
+    if (!cfg || syncBusy) return;
+    if (!confirm('This replaces all local notes with what’s in GitHub. Continue?')) return;
+    setSyncBusy(true, 'Pulling…');
+    try { const result = await pullAndResetFromGitHub(cfg); toast(result.message, !result.ok); if (result.ok) hideSyncBanner(); }
+    finally { setSyncBusy(false); }
   });
-
-  document.getElementById('sync-banner-dismiss').addEventListener('click', hideSyncBanner);
+  document.getElementById('sync-banner-dismiss').addEventListener('click', () => { if (!syncBusy) hideSyncBanner(); });
 }
 
 // ---------------------------------------------------------------------
@@ -1273,6 +1324,11 @@ function openGitHubModal() {
         <label for="gh-path">Notes path</label>
         <input type="text" id="gh-path" value="${escapeHtml(saved.basePath || 'notes')}" placeholder="notes" />
       </div>
+      <div class="github-repo-link" id="gh-repo-link">
+        ${saved.token && saved.owner && saved.repo
+          ? `<a href="https://github.com/${encodeURIComponent(saved.owner)}/${encodeURIComponent(saved.repo)}" target="_blank" rel="noopener noreferrer">Open repository on GitHub ↗</a>`
+          : `<a href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens" target="_blank" rel="noopener noreferrer">How to create or configure a GitHub token ↗</a>`}
+      </div>
       <div id="gh-status" class="sync-status-line"></div>
     </div>
     <div class="modal__footer">
@@ -1301,9 +1357,18 @@ function openGitHubModal() {
     el.className = 'sync-status-line visible' + (kind ? ' ' + kind : '');
   }
 
+  function refreshRepoLink(cfg) {
+    const el = document.getElementById('gh-repo-link');
+    if (!el) return;
+    el.innerHTML = cfg.token && cfg.owner && cfg.repo
+      ? `<a href="https://github.com/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}" target="_blank" rel="noopener noreferrer">Open repository on GitHub ↗</a>`
+      : `<a href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens" target="_blank" rel="noopener noreferrer">How to create or configure a GitHub token ↗</a>`;
+  }
+
   document.getElementById('gh-test').addEventListener('click', async () => {
     const cfg = config();
     persistConfig(cfg);
+    refreshRepoLink(cfg);
     setStatus('Testing connection…');
     try {
       const sync = new GitHubSync(cfg);
@@ -1321,10 +1386,14 @@ function openGitHubModal() {
       return;
     }
     persistConfig(cfg);
-    setStatus('Committing to GitHub…');
-    const result = await pushToGitHub(cfg);
-    setStatus(result.message, result.ok ? 'success' : 'error');
-    if (result.ok) { toast('Pushed to GitHub'); hideSyncBanner(); }
+    refreshRepoLink(cfg);
+    setSyncBusy(true, 'Pushing…');
+    setStatus('Pushing to GitHub…');
+    try {
+      const result = await pushToGitHub(cfg);
+      setStatus(result.message, result.ok ? 'success' : 'error');
+      if (result.ok) { toast('Pushed to GitHub'); hideSyncBanner(); }
+    } finally { setSyncBusy(false); }
   });
 
   let pullConfirmed = false;
@@ -1344,12 +1413,17 @@ function openGitHubModal() {
       return;
     }
 
+    setSyncBusy(true, 'Pulling…');
     setStatus('Pulling from GitHub…');
-    const result = await pullAndResetFromGitHub(cfg);
-    setStatus(result.message, result.ok ? 'success' : 'error');
-    if (result.ok) { toast('Local notes reset from GitHub'); hideSyncBanner(); }
-    pullConfirmed = false;
-    pullBtn.textContent = 'Pull & reset local notes';
+    try {
+      const result = await pullAndResetFromGitHub(cfg);
+      setStatus(result.message, result.ok ? 'success' : 'error');
+      if (result.ok) { toast('Local notes reset from GitHub'); hideSyncBanner(); }
+    } finally {
+      setSyncBusy(false);
+      pullConfirmed = false;
+      pullBtn.textContent = 'Pull & reset local notes';
+    }
   });
 }
 
