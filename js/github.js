@@ -295,7 +295,7 @@ export class GitHubSync {
     const map = new Map();
     (tree.tree || []).forEach((entry) => {
       if (entry.type !== 'blob') return;
-      if (entry.path.startsWith(this.basePath + '/') || entry.path.startsWith('notes-html/')) map.set(entry.path, entry.sha);
+      if (entry.path.startsWith(this.basePath + '/')) map.set(entry.path, entry.sha);
     });
       return map;
     } catch (err) {

@@ -1156,8 +1156,9 @@ async function getGitHubSyncDiff(cfg) {
   const remoteMap = await sync.getRemoteFileManifest();
   const baseline = new Map();
   allNotes.forEach((n) => {
+    // Quill HTML snapshots are generated artifacts and are intentionally
+    // excluded from sync comparison. Only the source note file participates.
     if (n.githubPath && n.githubSha) baseline.set(n.githubPath, n.githubSha);
-    if (n.githubHtmlPath && n.githubHtmlSha) baseline.set(n.githubHtmlPath, n.githubHtmlSha);
   });
 
   const paths = new Set([...localMap.keys(), ...remoteMap.keys(), ...baseline.keys()]);
@@ -1218,26 +1219,31 @@ function showSyncDiffStatus(diff) {
 }
 
 function showSyncConflictModal(cfg, diff) {
-  const rows = diff.files.map((f) => `
-    <div class="sync-diff-row">
-      <code>${escapeHtml(f.path)}</code>
-      <span>${f.localSha ? 'Local: ' + f.localSha.slice(0, 8) : 'Local: —'}</span>
-      <span>${f.remoteSha ? 'Repo: ' + f.remoteSha.slice(0, 8) : 'Repo: —'}</span>
-    </div>`).join('');
+  const seen = new Set();
+  const rows = diff.files.map((f) => {
+    // Keep the internal path for sync, but display only the filename.
+    const filename = f.path.split('/').pop();
+    if (seen.has(f.path)) return '';
+    seen.add(f.path);
+    return `
+      <div class="sync-diff-row">
+        <code title="${escapeHtml(f.path)}">${escapeHtml(filename)}</code>
+      </div>`;
+  }).join('');
   renderModal(`
     <div class="modal__header"><span class="modal__title">Sync conflict</span><button class="icon-btn" id="modal-close" aria-label="Close">✕</button></div>
     <div class="modal__body">
-      <div class="honesty-note"><strong>GitHub is treated as the final source of truth.</strong> Both sides changed since the last sync. Choose which version should win.</div>
+      <div class="honesty-note"><strong>GitHub is treated as the final source of truth.</strong> The following files differ on both sides.</div>
       <div class="sync-diff-list">${rows}</div>
     </div>
     <div class="modal__footer">
       <button class="btn" id="sync-conflict-cancel">Cancel</button>
-      <button class="btn" id="sync-conflict-pull">Pull from GitHub</button>
-      <button class="btn btn-primary" id="sync-conflict-push">Push local changes</button>
+      <button class="btn" id="sync-conflict-pull">Pull</button>
+      <button class="btn btn-primary" id="sync-conflict-push">Push</button>
     </div>`);
   document.getElementById('modal-close').addEventListener('click', closeModal);
   document.getElementById('sync-conflict-cancel').addEventListener('click', closeModal);
-  document.getElementById('sync-conflict-pull').addEventListener('click', async () => { closeModal(); await runSyncAction('pull', cfg); });
+  document.getElementById('sync-conflict-pull').addEventListener('click', async () => { closeModal(); await runSyncAction('pull', cfg, true); });
   document.getElementById('sync-conflict-push').addEventListener('click', async () => { closeModal(); await runSyncAction('push', cfg, true); });
 }
 
