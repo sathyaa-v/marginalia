@@ -328,7 +328,17 @@ function renderEditor() {
 
   // Notes created before dual-editor mode shipped have no editorType —
   // treat those as Markdown (that's genuinely what their content is).
-  const isQuill = (note.editorType || 'markdown') === 'quill';
+  // Defensive check: if a note's content is clearly a Quill Delta (has
+  // an .ops array) but editorType somehow isn't 'quill' — e.g. an older
+  // note synced before this field existed, or any sync path that might
+  // drop it — treat it as Quill and repair the record so this doesn't
+  // recur on future renders.
+  let isQuill = note.editorType === 'quill';
+  if (!isQuill && looksLikeDeltaJson(note.content)) {
+    isQuill = true;
+    note.editorType = 'quill';
+    db.put('notes', note);
+  }
 
   document.getElementById('note-title').value = note.title || '';
   updateMetaRow(note);
@@ -340,6 +350,7 @@ function renderEditor() {
 
   const textarea = document.getElementById('note-content');
   const quillContainer = document.getElementById('quill-editor');
+  const contentArea = document.getElementById('content-area');
   const previewEl = document.getElementById('note-preview');
   const previewBtn = document.getElementById('btn-preview');
   const syntaxBtn = document.getElementById('btn-syntax-help');
@@ -347,17 +358,16 @@ function renderEditor() {
   if (isQuill) {
     // Quill IS the rendered view — no separate Markdown-preview toggle
     // or syntax-insert panel makes sense here (Quill has its own toolbar).
-    textarea.style.display = 'none';
-    previewEl.style.display = 'none';
-    quillContainer.style.display = 'block';
+    contentArea.style.display = 'none';
     previewBtn.style.display = 'none';
     syntaxBtn.style.display = 'none';
-    document.getElementById('content-area').classList.remove('split');
+    quillContainer.style.display = 'flex';
 
     const quill = ensureQuillEditor();
     setQuillDelta(quill, note.content);
   } else {
     quillContainer.style.display = 'none';
+    contentArea.style.display = 'grid';
     previewBtn.style.display = '';
     syntaxBtn.style.display = '';
     textarea.style.display = 'block';
@@ -367,6 +377,19 @@ function renderEditor() {
     renderPreview(note);
     document.getElementById('content-area').classList.toggle('split', state.previewOn);
     previewEl.style.display = state.previewOn ? 'block' : 'none';
+  }
+}
+
+// Defensive detection for the self-healing check above — a Quill Delta is
+// always `{ ops: [...] }`; nothing a real Markdown note would contain
+// parses to that shape.
+function looksLikeDeltaJson(content) {
+  if (!content || content[0] !== '{') return false;
+  try {
+    const parsed = JSON.parse(content);
+    return !!parsed && Array.isArray(parsed.ops);
+  } catch {
+    return false;
   }
 }
 
