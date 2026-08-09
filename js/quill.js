@@ -29,6 +29,7 @@ const TOOLBAR_OPTIONS = [
   ['bold', 'italic', 'underline', 'strike'],
   ['blockquote', 'code-block'],
   [{ list: 'ordered' }, { list: 'bullet' }, { list: 'check' }],
+  [{ indent: '-1' }, { indent: '+1' }, { align: [] }],
   ['link', 'image'],
   ['clean'],
 ];

@@ -36,6 +36,7 @@ const state = {
   selectedNoteId: null,
   query: '',
   previewOn: false,
+  tocOn: localStorage.getItem('tocOn') !== 'false',
   skimMode: false,   // desktop toggle: note list shows full rendered previews instead of snippets
   theme: localStorage.getItem('theme') || 'system',
   palette: localStorage.getItem('palette') || 'default',
@@ -351,6 +352,7 @@ function renderEditor() {
   document.getElementById('btn-archive').classList.toggle('active', !!note.archived);
 
   renderTagRow(note);
+  document.getElementById('btn-toc').classList.toggle('active', state.tocOn);
 
   const textarea = document.getElementById('note-content');
   const quillContainer = document.getElementById('quill-editor');
@@ -369,6 +371,8 @@ function renderEditor() {
 
     const quill = ensureQuillEditor();
     setQuillDelta(quill, note.content);
+    renderQuillTableOfContents(quill);
+    document.getElementById('quill-toc').style.display = state.tocOn ? '' : 'none';
   } else {
     quillContainer.style.display = 'none';
     if (quillInstance) quillInstance.root.blur();
@@ -380,6 +384,7 @@ function renderEditor() {
 
     previewBtn.classList.toggle('active', state.previewOn);
     renderPreview(note);
+    document.getElementById('quill-toc').style.display = 'none';
     document.getElementById('content-area').classList.toggle('split', state.previewOn);
     previewEl.style.display = state.previewOn ? 'block' : 'none';
   }
@@ -436,7 +441,7 @@ function renderPreview(note) {
     if (window.hljs) {
       el.querySelectorAll('pre code').forEach((block) => window.hljs.highlightElement(block));
     }
-    renderTableOfContents(el);
+    if (state.tocOn) renderTableOfContents(el);
   } else {
     el.textContent = note.content || '';
   }
@@ -446,7 +451,7 @@ function renderPreview(note) {
 // smooth-scroll to that section within the preview.
 function renderTableOfContents(previewEl) {
   const headings = previewEl.querySelectorAll('h1, h2, h3, h4, h5, h6');
-  if (headings.length < 3) return;
+  if (headings.length === 0) return;
 
   const seen = new Set();
   const items = [];
@@ -478,6 +483,46 @@ function renderTableOfContents(previewEl) {
     });
   });
   previewEl.insertBefore(toc, previewEl.firstChild);
+}
+
+function renderQuillTableOfContents(quill) {
+  const root = quill?.root;
+  const container = document.getElementById('quill-toc');
+  if (!root || !container) return;
+  const headings = root.querySelectorAll('h1, h2, h3, h4, h5, h6');
+  container.innerHTML = '';
+  if (!state.tocOn || headings.length === 0) return;
+
+  const seen = new Set();
+  const items = [];
+  headings.forEach((h) => {
+    const base = slugifyHeading(h.textContent) || 'section';
+    let slug = base;
+    let i = 2;
+    while (seen.has(slug)) slug = `${base}-${i++}`;
+    seen.add(slug);
+    h.id = `quill-${slug}`;
+    items.push({ level: parseInt(h.tagName[1], 10), text: h.textContent, id: h.id });
+  });
+
+  const minLevel = Math.min(...items.map((it) => it.level));
+  const toc = document.createElement('details');
+  toc.className = 'toc';
+  toc.open = true;
+  toc.innerHTML = `
+    <summary class="toc__summary">Contents</summary>
+    <nav class="toc__list">
+      ${items.map((it) => `<a class="toc__item toc__item--l${Math.min(5, it.level - minLevel)}" href="#${it.id}">${escapeHtml(it.text)}</a>`).join('')}
+    </nav>
+  `;
+  toc.querySelectorAll('.toc__item').forEach((a) => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      const target = root.querySelector('#' + CSS.escape(a.getAttribute('href').slice(1)));
+      target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+  container.appendChild(toc);
 }
 
 function slugifyHeading(text) {
@@ -797,6 +842,56 @@ function exportSingleNote() {
   if (!note) return;
   const exportNote = note.editorType === 'quill' ? { ...note, content: deltaToMarkdown(note.content) } : note;
   downloadFile(`${sanitizeFileName(note.title || 'untitled')}.md`, noteToMarkdown(exportNote, state.folders), 'text/markdown');
+}
+
+function exportSingleNotePdf() {
+  const note = state.notes.find((n) => n.id === state.selectedNoteId);
+  if (!note) return;
+  const title = escapeHtml(note.title || 'Untitled note');
+  let bodyHtml = '';
+  if (note.editorType === 'quill') {
+    bodyHtml = renderDeltaToHtml(note.content);
+  } else if (window.marked) {
+    bodyHtml = window.marked.parse(note.content || '');
+  } else {
+    bodyHtml = `<pre>${escapeHtml(note.content || '')}</pre>`;
+  }
+  if (window.DOMPurify) bodyHtml = window.DOMPurify.sanitize(bodyHtml);
+  const toc = state.tocOn ? buildPrintableToc(bodyHtml) : '';
+  const printWindow = window.open('', '_blank', 'noopener,noreferrer');
+  if (!printWindow) { toast('Allow pop-ups to export as PDF', true); return; }
+  printWindow.document.write(`<!doctype html><html><head><title>${title}</title><style>
+    @page { size: A4; margin: 18mm; }
+    body { font-family: Arial, sans-serif; color:#222; line-height:1.6; max-width:760px; margin:auto; }
+    h1,h2,h3,h4,h5,h6 { break-after:avoid; }
+    h1 { font-size:28px; } h2 { font-size:22px; } h3 { font-size:18px; }
+    img { max-width:100%; } pre { white-space:pre-wrap; background:#f5f5f5; padding:12px; border-radius:4px; }
+    blockquote { border-left:3px solid #999; padding-left:12px; color:#555; }
+    .toc { border:1px solid #ddd; padding:10px 14px; margin-bottom:24px; }
+    .toc a { display:block; color:#333; text-decoration:none; margin:3px 0; }
+    .meta { color:#777; font-size:12px; margin-bottom:24px; }
+  </style></head><body><h1>${title}</h1><div class="meta">${escapeHtml(formatDate(note.updatedAt))}</div>${toc}${bodyHtml}</body></html>`);
+  printWindow.document.close();
+  printWindow.focus();
+  setTimeout(() => printWindow.print(), 250);
+  db.setMeta('lastExportAt', nowISO());
+}
+
+function buildPrintableToc(html) {
+  const holder = document.createElement('div');
+  holder.innerHTML = html;
+  const headings = holder.querySelectorAll('h1, h2, h3, h4, h5, h6');
+  if (!headings.length) return '';
+  const seen = new Set();
+  const items = [];
+  headings.forEach((h) => {
+    const base = slugifyHeading(h.textContent) || 'section';
+    let id = base, i = 2;
+    while (seen.has(id)) id = `${base}-${i++}`;
+    seen.add(id); h.id = id;
+    items.push({ level: Number(h.tagName.slice(1)), text: h.textContent, id });
+  });
+  return `<div class="toc"><strong>Contents</strong>${items.map((it) => `<a style="padding-left:${(it.level - Math.min(...items.map(x => x.level))) * 14}px" href="#${it.id}">${escapeHtml(it.text)}</a>`).join('')}</div>`;
 }
 
 function downloadFile(filename, content, mime) {
@@ -1781,11 +1876,18 @@ function wireGlobalEvents() {
   document.getElementById('btn-archive').addEventListener('click', toggleArchive);
   document.getElementById('btn-delete').addEventListener('click', deleteNote);
   document.getElementById('btn-export-single').addEventListener('click', exportSingleNote);
+  document.getElementById('btn-export-pdf').addEventListener('click', exportSingleNotePdf);
   document.getElementById('btn-preview').addEventListener('click', () => {
     state.previewOn = !state.previewOn;
     renderEditor();
   });
   document.getElementById('btn-syntax-help').addEventListener('click', openSyntaxModal);
+  document.getElementById('btn-toc').addEventListener('click', () => {
+    state.tocOn = !state.tocOn;
+    localStorage.setItem('tocOn', String(state.tocOn));
+    document.getElementById('btn-toc').classList.toggle('active', state.tocOn);
+    renderEditor();
+  });
 
   document.getElementById('btn-theme').addEventListener('click', openThemeModal);
   document.getElementById('btn-export').addEventListener('click', exportJSON);
