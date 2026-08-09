@@ -36,6 +36,7 @@ const state = {
   selectedNoteId: null,
   query: '',
   previewOn: false,
+  previewAll: false,
   tocOn: localStorage.getItem('tocOn') !== 'false',
   theme: localStorage.getItem('theme') || 'system',
   palette: localStorage.getItem('palette') || 'default',
@@ -220,9 +221,23 @@ function renderTagCloud() {
 }
 
 function renderNoteList() {
+  const root = document.getElementById('note-list');
+  const previewButton = document.getElementById('btn-preview-all');
+  if (state.previewAll) {
+    const notes = activeNotes().slice().sort((a, b) => (a.title || 'Untitled').localeCompare(b.title || 'Untitled'));
+    document.getElementById('list-title').textContent = 'Preview';
+    previewButton.textContent = '▤ Notes';
+    previewButton.title = 'Return to note list';
+    previewButton.classList.add('active');
+    renderNoteCardsInto('note-list', notes.map((note) => ({ note, snippet: '' })), true);
+    return;
+  }
   const results = visibleNotes();
   const label = viewLabel();
   document.getElementById('list-title').textContent = label;
+  previewButton.textContent = '▤ Preview';
+  previewButton.title = 'Preview the content of all files';
+  previewButton.classList.remove('active');
   renderNoteCardsInto('note-list', results, false);
 }
 
@@ -361,6 +376,7 @@ function renderEditor() {
   const previewEl = document.getElementById('note-preview');
   const previewBtn = document.getElementById('btn-preview');
   const syntaxBtn = document.getElementById('btn-syntax-help');
+  const quillToolbar = quillContainer.querySelector('.ql-toolbar');
 
   if (isQuill) {
     // Quill IS the rendered view — no separate Markdown-preview toggle
@@ -369,6 +385,8 @@ function renderEditor() {
     previewBtn.style.display = 'none';
     syntaxBtn.style.display = 'none';
     quillContainer.style.display = 'flex';
+    quillContainer.classList.remove('quill-editor--hidden');
+    if (quillToolbar) quillToolbar.style.display = '';
 
     const quill = ensureQuillEditor();
     setQuillDelta(quill, note.content);
@@ -376,6 +394,8 @@ function renderEditor() {
     document.getElementById('quill-toc').style.display = state.tocOn ? '' : 'none';
   } else {
     quillContainer.style.display = 'none';
+    quillContainer.classList.add('quill-editor--hidden');
+    if (quillToolbar) quillToolbar.style.display = 'none';
     if (quillInstance) quillInstance.root.blur();
     contentArea.style.display = 'grid';
     previewBtn.style.display = '';
@@ -1059,15 +1079,13 @@ async function pushToGitHub(cfg) {
   try {
     const sync = new GitHubSync(cfg);
     const notes = activeNotes();
-    // Every path (both the note file itself AND, for Quill notes, its
-    // notes-html/*.html snapshot) this client has ever seen for this
-    // repo — including for notes since soft-deleted — so the push can
-    // also delete stale files instead of only ever adding/updating.
+    // Every source note path this client has ever synced with this repo,
+    // including soft-deleted notes, so renamed/deleted source files can be
+    // removed from the repo instead of only ever adding/updating.
     const allKnownNotes = await db.getAll('notes');
     const previousPaths = new Set();
     allKnownNotes.forEach((n) => {
       if (n.githubPath) previousPaths.add(n.githubPath);
-      if (n.githubHtmlPath) previousPaths.add(n.githubHtmlPath);
     });
 
     const result = await sync.saveNotes(notes, state.folders, {
@@ -1081,12 +1099,12 @@ async function pushToGitHub(cfg) {
     state.notes = await db.getAll('notes');
     renderAll();
 
-    setSyncMeta(cfg, { lastSyncedAt: nowISO(), lastSyncedRemoteAt: result.commitDate });
+    const syncedManifest = await buildSyncFileManifest(activeNotes(), state.folders, { basePath: cfg.basePath || 'notes' });
+    setSyncMeta(cfg, { lastSyncedAt: nowISO(), lastSyncedRemoteAt: result.commitDate, fileShas: Object.fromEntries(syncedManifest.map((f) => [f.path, f.sha])) });
 
-    const htmlNote = result.htmlSnapshotsWritten ? `, wrote ${result.htmlSnapshotsWritten} HTML snapshot(s)` : '';
     return {
       ok: true,
-      message: `Pushed ${result.notesUpdated} note(s)${result.notesDeleted ? `, removed ${result.notesDeleted} stale file(s)` : ''}${htmlNote}.`,
+      message: `Pushed ${result.notesUpdated} note(s)${result.notesDeleted ? `, removed ${result.notesDeleted} stale file(s)` : ''}.`,
     };
   } catch (err) {
     return { ok: false, message: err.message };
@@ -1127,7 +1145,8 @@ async function pullAndResetFromGitHub(cfg) {
 
     let remoteAt = null;
     try { remoteAt = await sync.getLatestRemoteChangeTime(); } catch { /* non-fatal, fall back below */ }
-    setSyncMeta(cfg, { lastSyncedAt: nowISO(), lastSyncedRemoteAt: remoteAt || nowISO() });
+    const remoteManifest = await sync.getRemoteFileManifest();
+    setSyncMeta(cfg, { lastSyncedAt: nowISO(), lastSyncedRemoteAt: remoteAt || nowISO(), fileShas: Object.fromEntries(remoteManifest.entries()) });
 
     return {
       ok: true,
@@ -1151,37 +1170,42 @@ async function getGitHubSyncDiff(cfg) {
   const sync = new GitHubSync(cfg);
   const allNotes = await db.getAll('notes');
   const localNotes = allNotes.filter((n) => !n.deleted);
-  const localFiles = await buildSyncFileManifest(localNotes, state.folders, { renderQuillHtml: (note) => renderDeltaToHtml(note.content), basePath: cfg.basePath || 'notes' });
+  const localFiles = await buildSyncFileManifest(localNotes, state.folders, { basePath: cfg.basePath || 'notes' });
   const localMap = new Map(localFiles.map((f) => [f.path, { sha: f.sha, note: f.note, kind: f.kind }]));
   const remoteMap = await sync.getRemoteFileManifest();
-  const baseline = new Map();
-  allNotes.forEach((n) => {
-    // Quill HTML snapshots are generated artifacts and are intentionally
-    // excluded from sync comparison. Only the source note file participates.
-    if (n.githubPath && n.githubSha) baseline.set(n.githubPath, n.githubSha);
-  });
-
+  const saved = getSyncMeta(cfg);
+  const baseline = new Map(Object.entries(saved.fileShas || {}));
   const paths = new Set([...localMap.keys(), ...remoteMap.keys(), ...baseline.keys()]);
   const files = [];
   let localChanged = false;
   let remoteChanged = false;
+  let conflict = false;
+
   for (const path of [...paths].sort()) {
     const localSha = localMap.get(path)?.sha || null;
     const remoteSha = remoteMap.get(path) || null;
+    if (localSha === remoteSha) continue;
     const baseSha = baseline.get(path) || null;
-    const same = localSha === remoteSha;
-    if (same) continue;
-
-    // With no sync baseline (first connection), compare the two actual
-    // hashes directly. Do not mark both sides as changed merely because
-    // both files exist — that caused a false conflict on first load.
-    const lChanged = baseSha ? localSha !== baseSha : !!localSha;
-    const rChanged = baseSha ? remoteSha !== baseSha : !!remoteSha;
-    if (lChanged) localChanged = true;
-    if (rChanged) remoteChanged = true;
-    files.push({ path, localSha, remoteSha, baseSha, conflict: lChanged && rChanged });
+    let lChanged;
+    let rChanged;
+    if (baseSha) {
+      lChanged = localSha !== baseSha;
+      rChanged = remoteSha !== baseSha;
+    } else {
+      // No common baseline: treat a remote/local presence difference as a
+      // one-sided change. If both exist with different SHA, GitHub is the
+      // authoritative side until the user explicitly chooses Push.
+      lChanged = !!localSha && !remoteSha;
+      rChanged = !!remoteSha && !localSha;
+      if (localSha && remoteSha) rChanged = true;
+    }
+    const isConflict = !!(lChanged && rChanged);
+    localChanged ||= lChanged;
+    remoteChanged ||= rChanged;
+    conflict ||= isConflict;
+    files.push({ path, localSha, remoteSha, baseSha, localChanged: lChanged, remoteChanged: rChanged, conflict: isConflict });
   }
-  return { files, localChanged, remoteChanged, conflict: localChanged && remoteChanged };
+  return { files, localChanged, remoteChanged, conflict };
 }
 
 async function checkGitHubSyncStatus() {
@@ -1219,28 +1243,27 @@ function showSyncDiffStatus(diff) {
 }
 
 function showSyncConflictModal(cfg, diff) {
-  const seen = new Set();
-  const rows = diff.files.map((f) => {
-    // Keep the internal path for sync, but display only the filename.
-    const filename = f.path.split('/').pop();
-    if (seen.has(f.path)) return '';
-    seen.add(f.path);
-    return `
-      <div class="sync-diff-row">
-        <code title="${escapeHtml(f.path)}">${escapeHtml(filename)}</code>
-      </div>`;
-  }).join('');
+  const localFiles = diff.files.filter((f) => f.localChanged);
+  const remoteFiles = diff.files.filter((f) => f.remoteChanged);
+  const names = (files) => [...new Map(files.map((f) => [f.path, f.path.split('/').pop()])).values()];
+  const localRows = names(localFiles).map((name) => `<li>${escapeHtml(name)}</li>`).join('') || '<li class="field-hint">No local changes</li>';
+  const remoteRows = names(remoteFiles).map((name) => `<li>${escapeHtml(name)}</li>`).join('') || '<li class="field-hint">No GitHub changes</li>';
   renderModal(`
     <div class="modal__header"><span class="modal__title">Sync conflict</span><button class="icon-btn" id="modal-close" aria-label="Close">✕</button></div>
     <div class="modal__body">
-      <div class="honesty-note"><strong>GitHub is treated as the final source of truth.</strong> The following files differ on both sides.</div>
-      <div class="sync-diff-list">${rows}</div>
+      <div class="honesty-note"><strong>GitHub is treated as the final source of truth.</strong> Choose which set of changes to synchronize.</div>
+      <div class="sync-conflict-groups">
+        <section class="sync-conflict-group">
+          <div class="sync-conflict-group__header"><strong>Local changes</strong><button class="btn btn-primary" id="sync-conflict-push">Push</button></div>
+          <ul class="sync-conflict-files">${localRows}</ul>
+        </section>
+        <section class="sync-conflict-group">
+          <div class="sync-conflict-group__header"><strong>GitHub changes</strong><button class="btn" id="sync-conflict-pull">Pull</button></div>
+          <ul class="sync-conflict-files">${remoteRows}</ul>
+        </section>
+      </div>
     </div>
-    <div class="modal__footer">
-      <button class="btn" id="sync-conflict-cancel">Cancel</button>
-      <button class="btn" id="sync-conflict-pull">Pull</button>
-      <button class="btn btn-primary" id="sync-conflict-push">Push</button>
-    </div>`);
+    <div class="modal__footer"><button class="btn" id="sync-conflict-cancel">Cancel</button></div>`);
   document.getElementById('modal-close').addEventListener('click', closeModal);
   document.getElementById('sync-conflict-cancel').addEventListener('click', closeModal);
   document.getElementById('sync-conflict-pull').addEventListener('click', async () => { closeModal(); await runSyncAction('pull', cfg, true); });
@@ -1822,25 +1845,6 @@ function applyMobileTab() {
   });
 }
 
-function openAllFilesPreviewModal() {
-  const notes = activeNotes().slice().sort((a, b) => {
-    const at = (a.title || 'Untitled').toLowerCase();
-    const bt = (b.title || 'Untitled').toLowerCase();
-    return at.localeCompare(bt);
-  });
-  const results = notes.map((note) => ({ note, snippet: '' }));
-  renderModal(`
-    <div class="modal__header">
-      <span class="modal__title">Preview all files</span>
-      <button class="icon-btn" id="modal-close" aria-label="Close">✕</button>
-    </div>
-    <div class="modal__body all-files-preview-body">
-      <div class="field-hint" style="margin-bottom:12px;">${notes.length} file(s)</div>
-      <div id="all-files-preview-list" class="all-files-preview-list"></div>
-    </div>`);
-  document.getElementById('modal-close').addEventListener('click', closeModal);
-  renderNoteCardsInto('all-files-preview-list', results, true);
-}
 
 // ---------------------------------------------------------------------
 // Event wiring
@@ -1852,7 +1856,7 @@ function wireGlobalEvents() {
 
   document.getElementById('btn-add-folder').addEventListener('click', addFolder);
   document.getElementById('btn-new-note').addEventListener('click', () => createNote());
-  document.getElementById('btn-preview-all').addEventListener('click', openAllFilesPreviewModal);
+  document.getElementById('btn-preview-all').addEventListener('click', () => { state.previewAll = !state.previewAll; renderNoteList(); });
   document.getElementById('btn-new-note-caret').addEventListener('click', (e) => {
     e.stopPropagation();
     const menu = document.getElementById('new-note-menu');

@@ -177,7 +177,6 @@ async function gitBlobSha(content) {
 
 export async function buildSyncFileManifest(notes, folders, { renderQuillHtml, basePath = 'notes' } = {}) {
   const files = [];
-  const HTML_BASE = 'notes-html';
   for (const note of notes) {
     const dirPath = `${thisFolderPath(folders, note.folderId)}`;
     const slug = `${thisSlugify(note.title)}-${note.id.slice(0, 8)}`;
@@ -190,11 +189,8 @@ export async function buildSyncFileManifest(notes, folders, { renderQuillHtml, b
         tags: note.tags || [], pinned: !!note.pinned, created: note.createdAt,
         updated: note.updatedAt, editorType: 'quill', delta,
       }, null, 2);
+      // Quill HTML snapshots are generated UI artifacts, not sync sources.
       files.push({ note, path: note.githubPath || `${base}/${slug}.quill.json`, content, kind: 'quill' });
-      if (typeof renderQuillHtml === 'function') {
-        const html = renderQuillHtml(note);
-        files.push({ note, path: note.githubHtmlPath || (`${HTML_BASE}/${dirPath}`.replace(/\/+$/, '').replace(/^\/+/, '') + `/${slug}.html`), content: html, kind: 'html' });
-      }
     } else {
       files.push({ note, path: note.githubPath || `${base}/${slug}.md`, content: noteToMarkdown(note, folders), kind: 'markdown' });
     }
@@ -295,7 +291,7 @@ export class GitHubSync {
     const map = new Map();
     (tree.tree || []).forEach((entry) => {
       if (entry.type !== 'blob') return;
-      if (entry.path.startsWith(this.basePath + '/')) map.set(entry.path, entry.sha);
+      if (entry.path.startsWith(this.basePath + '/') && (entry.path.endsWith('.md') || entry.path.endsWith('.quill.json'))) map.set(entry.path, entry.sha);
     });
       return map;
     } catch (err) {
@@ -337,16 +333,13 @@ export class GitHubSync {
     const commitData = await commitRes.json();
     const baseTreeSha = commitData.tree.sha;
 
-    // Quill snapshots live in a separate top-level directory, sibling to
-    // basePath — this is what makes FR-66 (pull ignores notes-html/) true
-    // by construction: pull only ever lists contents under basePath.
-    const HTML_BASE = 'notes-html';
-
+    // The sync tree contains only Markdown and Quill source files under
+    // basePath. Generated HTML is never added to or compared by sync.
+  
     // 1. Build local file contents and compare Git blob hashes with the repo.
     // Only changed blobs are uploaded; unchanged files are reused by SHA.
     const treeEntries = [];
     const newPaths = new Set();
-    let htmlSnapshotsWritten = 0;
     let notesUpdated = 0;
     const remoteManifest = await this.getRemoteFileManifest();
     const syncFiles = await buildSyncFileManifest(notes, folders, { renderQuillHtml, basePath: this.basePath });
@@ -358,8 +351,7 @@ export class GitHubSync {
       } else {
         const blob = await this._createBlob(file.content);
         treeEntries.push({ path: file.path, mode: '100644', type: 'blob', sha: blob.sha });
-        if (file.kind === 'html') htmlSnapshotsWritten++;
-        else notesUpdated++;
+        notesUpdated++;
       }
       newPaths.add(file.path);
       if (file.kind === 'quill') {
@@ -368,23 +360,18 @@ export class GitHubSync {
       } else if (file.kind === 'markdown') {
         file.note.githubPath = file.path;
         file.note.githubSha = file.sha;
-      } else if (file.kind === 'html') {
-        file.note.githubHtmlPath = file.path;
-        file.note.githubHtmlSha = file.sha;
-        file.note.lastHtmlSyncedAt = nowISO();
+      }
       }
     }
 
     // 1b. Delete any previously-synced path that isn't being written this
-    // time — covers locally-deleted notes, renames, and (FR-67) a Quill
-    // note's stale .quill.json/.html pair. Restricted to our own two
-    // directories as a safety guard against touching unrelated repo files.
+    // time — covers locally-deleted notes and renames. Restricted to the
+    // configured notes directory as a safety guard against unrelated files.
     let deletedCount = 0;
     for (const oldPath of previousPaths) {
       if (!oldPath) continue;
       const underBasePath = oldPath.startsWith(this.basePath + '/');
-      const underHtmlBase = oldPath.startsWith(HTML_BASE + '/');
-      if (!underBasePath && !underHtmlBase) continue;
+      if (!underBasePath) continue;
       if (!newPaths.has(oldPath)) {
         treeEntries.push({ path: oldPath, mode: '100644', type: 'blob', sha: null });
         deletedCount++;
@@ -432,7 +419,6 @@ export class GitHubSync {
       commitDate: newCommit.committer?.date || newCommit.author?.date || new Date().toISOString(),
       notesUpdated,
       notesDeleted: deletedCount,
-      htmlSnapshotsWritten,
     };
   }
 
@@ -445,9 +431,8 @@ export class GitHubSync {
    * were added to the repo by hand, it falls back to the physical
    * directory path the file was found in.
    *
-   * Only lists contents under basePath — notes-html/ is a sibling
-   * directory, so it is never traversed here at all (FR-66/68: the HTML
-   * snapshot is write-only and never treated as authoritative).
+   * Only lists supported source files under basePath. Generated HTML
+   * files are intentionally ignored.
    */
   async pullNotes() {
     const res = await fetch(
