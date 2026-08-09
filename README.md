@@ -103,22 +103,27 @@ matches the requirements doc's explicit scope call).
 
 **Scope note — what's actually wired up vs. not:**
 
-- **Implemented:** the core editor experience (FR-54–FR-58, this pass) —
-  type picker, Quill-by-default, CDN loading, Delta storage, correct
-  editor auto-loading. Also wired: Quill's built-in syntax highlighting
-  via the shared highlight.js instance (FR-59), search indexing against
-  Quill's extracted plain text instead of raw Delta JSON (FR-60),
-  skim-view rendering of Quill notes via Quill's own renderer (FR-61),
-  and Markdown ZIP / single-note export converting Quill notes to
-  Markdown at export time only — local storage always stays Delta JSON
-  (FR-62).
-- **Not yet built:** GitHub sync for Quill notes — committing Delta as
-  `.quill.json`, a companion read-only `notes-html/*.html` snapshot, and
-  the associated pull/stale-file handling (FR-63–FR-68). The sync adapter
-  (`js/github.js`) already has the machinery for this (`saveNotes`
-  accepts a `renderQuillHtml` callback), but the app doesn't call it yet
-  — pushing a Quill note to GitHub right now will write its Delta JSON
-  file but silently skip the HTML snapshot.
+- **Implemented:** the core editor experience (FR-54–FR-58) — type
+  picker, Quill-by-default, CDN loading, Delta storage, correct editor
+  auto-loading. Also wired: Quill's built-in syntax highlighting via the
+  shared highlight.js instance (FR-59), search indexing against Quill's
+  extracted plain text instead of raw Delta JSON (FR-60), skim-view
+  rendering of Quill notes via Quill's own renderer (FR-61), Markdown
+  ZIP / single-note export converting Quill notes to Markdown at export
+  time only (FR-62), and full GitHub sync (FR-63–FR-68): pushing a Quill
+  note commits its Delta as `.quill.json` (source of truth, verified via
+  an actual push→pull round trip in testing — content, tags, pin state,
+  and folder nesting all survive intact) *and* a companion read-only
+  `notes-html/*.html` snapshot rendered through Quill's own renderer, so
+  the note is human-readable if you browse the repo on GitHub directly.
+  The snapshot only regenerates when the note actually changed since the
+  last sync, and both files get cleaned up together when a note is
+  deleted or its GitHub sync path changes.
+- **Known limitation:** pull never reads `notes-html/` back (by design —
+  it's write-only, sourced fresh from `.quill.json` every time), so after
+  a pull, the next push will regenerate every Quill note's HTML snapshot
+  once, even for notes that didn't actually change — a minor inefficiency,
+  not a correctness issue.
 
 Full detail in `NOTES-APP-REQUIREMENTS.md` §3.2.1.
 
