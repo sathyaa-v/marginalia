@@ -120,7 +120,6 @@
       <div class="list-header-row">
         <span class="list-title" id="list-title">All notes</span>
         <div style="display:flex; gap:6px;">
-          <button class="icon-btn" id="btn-skim-toggle" title="Skim view — show full formatting" aria-label="Toggle skim view">📖</button>
           <div class="new-note-group">
             <button class="new-note-btn" id="btn-new-note">+ New</button>
             <button class="new-note-btn new-note-btn__caret" id="btn-new-note-caret" aria-label="Choose editor type" aria-haspopup="true">▾</button>
@@ -171,19 +170,10 @@
     </div>
   </section>
 
-  <!-- ============ SKIM (mobile dedicated tab) ============ -->
-  <section class="pane" id="pane-skim">
-    <div class="note-list-header">
-      <span class="list-title" id="skim-list-title">All notes</span>
-    </div>
-    <div class="note-list" id="skim-list"></div>
-  </section>
-
   <!-- ============ MOBILE TABS ============ -->
   <nav class="mobile-tabs">
     <button data-tab="sidebar" class="active">📚<span>Library</span></button>
     <button data-tab="list">📇<span>Notes</span></button>
-    <button data-tab="skim">📖<span>Skim</span></button>
     <button data-tab="editor">✎<span>Write</span></button>
   </nav>
 
