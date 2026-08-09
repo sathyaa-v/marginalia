@@ -704,6 +704,7 @@ a { color: var(--accent-2); }
    Quill editor (FR-56/58) — theme the stock "snow" toolbar/editor to
    match the app's tokens instead of leaving Quill's default white/black.
 --------------------------------------------------------------------- */
+.quill-toc { padding: 0 40px; }
 .quill-editor { flex: 1; display: flex; flex-direction: column; min-height: 400px; }
 .quill-editor .ql-toolbar.ql-snow {
   border: none;
@@ -744,6 +745,7 @@ a { color: var(--accent-2); }
   background: var(--paper); color: var(--ink); border-color: var(--line);
 }
 @media (max-width: 900px) {
+  .quill-toc { padding: 0 12px; }
   .quill-editor .ql-toolbar.ql-snow { padding: 8px 12px; }
   .quill-editor .ql-editor { padding: 16px 16px 60px; }
 }
