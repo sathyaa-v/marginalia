@@ -58,25 +58,43 @@ async function boot() {
   applyFontSize();
   applyFontFamily();
   applyDensity();
-  // Do not block first paint on storage persistence or network sync checks.
-  // The editor/list must become interactive before any GitHub work starts.
-  requestPersistence();
-  state.notes = await db.getAll('notes');
-  state.folders = await db.getAll('folders');
+
+  // IMPORTANT: never wait for IndexedDB before painting the application.
+  // IndexedDB can be temporarily blocked by another tab, a pending upgrade,
+  // private-mode restrictions, or a browser storage prompt. Waiting here made
+  // the whole page appear hung on first load.
   wireGlobalEvents();
   renderAll();
   registerServiceWorker();
   window.addEventListener('online', updateOnlineStatus);
   window.addEventListener('offline', updateOnlineStatus);
   updateOnlineStatus();
-  maybeShowExportReminder();
-  // GitHub comparison is intentionally deferred until after the first paint.
-  // A large repository/tree must never make the initial page feel frozen.
-  const startSyncCheck = () => checkGitHubSyncStatus();
+
+  // Load local data after the shell is interactive. If storage fails, keep the
+  // UI usable and show a non-blocking error instead of leaving a blank page.
+  try {
+    await Promise.all([
+      db.getAll('notes').then((notes) => { state.notes = notes; }),
+      db.getAll('folders').then((folders) => { state.folders = folders; }),
+    ]);
+    renderAll();
+    maybeShowExportReminder();
+  } catch (err) {
+    console.error('Failed to load local notes:', err);
+    toast('Could not load local notes. The page is still available; please reload if needed.', true);
+  }
+
+  // Storage persistence is best-effort and never blocks startup.
+  requestPersistence();
+
+  // GitHub comparison is intentionally deferred until after the first paint
+  // and after local data has loaded. A repository/tree request can never block
+  // the editor or note list.
+  const startSyncCheck = () => checkGitHubSyncStatus().catch((err) => console.warn('GitHub sync check failed:', err));
   if ('requestIdleCallback' in window) {
-    window.requestIdleCallback(startSyncCheck, { timeout: 1200 });
+    window.requestIdleCallback(startSyncCheck, { timeout: 1500 });
   } else {
-    setTimeout(startSyncCheck, 600);
+    setTimeout(startSyncCheck, 800);
   }
 }
 
