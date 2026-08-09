@@ -978,3 +978,11 @@ a { color: var(--accent-2); }
   .content-area.split { grid-template-columns: 1fr; }
   .content-preview { border-left: none; border-top: 1px solid var(--line); padding-left: 0; padding-top: 18px; }
 }
+
+
+.quill-editor--hidden { display: none !important; }
+.sync-conflict-groups { display: grid; gap: 16px; }
+.sync-conflict-group { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; }
+.sync-conflict-group__header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
+.sync-conflict-files { margin:0; padding-left:20px; }
+.sync-conflict-files li { padding:4px 0; word-break:break-word; }
