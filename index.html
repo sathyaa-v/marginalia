@@ -148,9 +148,11 @@
         <button class="icon-btn" id="btn-archive" title="Archive note" aria-label="Archive note">🗄</button>
         <button class="icon-btn" id="btn-preview" title="Toggle preview" aria-label="Toggle preview">◧</button>
         <button class="icon-btn" id="btn-syntax-help" title="Markdown syntax reference" aria-label="Markdown syntax reference">❓</button>
+        <button class="icon-btn" id="btn-toc" title="Toggle automatic table of contents" aria-label="Toggle automatic table of contents">☷</button>
         <div class="editor-toolbar__spacer"></div>
         <span class="sync-status-line" id="autosave-label" style="background:none; padding:0;"></span>
         <button class="icon-btn" id="btn-export-single" title="Export as .md" aria-label="Export note as markdown">↓</button>
+        <button class="icon-btn" id="btn-export-pdf" title="Export note as PDF" aria-label="Export note as PDF">▣</button>
         <button class="icon-btn danger" id="btn-delete" title="Delete note" aria-label="Delete note">🗑</button>
       </div>
       <div class="editor-body">
@@ -163,6 +165,7 @@
           <textarea class="content-textarea" id="note-content" placeholder="Start writing in Markdown…"></textarea>
           <div class="content-preview" id="note-preview" style="display:none;"></div>
         </div>
+        <div class="quill-toc" id="quill-toc" style="display:none;"></div>
         <div class="quill-editor" id="quill-editor" style="display:none;"></div>
       </div>
     </div>
