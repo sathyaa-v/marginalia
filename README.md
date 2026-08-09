@@ -127,6 +127,20 @@ matches the requirements doc's explicit scope call).
 
 Full detail in `NOTES-APP-REQUIREMENTS.md` §3.2.1.
 
+**Bugfix history worth knowing about:** an earlier version of `index.html`
+had a mismatched element ID for the Quill mount point (`#quill-editor-wrapper`
+with a nested `#quill-editor-mount`, while `js/app.js` looked for a single
+`#quill-editor`). Since `document.getElementById('quill-editor')` returned
+`null`, **every single call to `renderEditor()` threw immediately and
+aborted partway through** — which is what produced both symptoms at once:
+raw Delta JSON showing instead of rendered content, and an uneditable
+Quill editor appearing in the wrong place on the page. Fixed by
+correcting the ID. Also added a defensive self-heal: if a note's content
+is clearly a Delta (`{ "ops": [...] }`) but its `editorType` isn't
+`'quill'` for any reason, the app now treats it as Quill and repairs the
+stored record automatically, so this class of mismatch can't recur even
+through an as-yet-undiscovered path.
+
 ## Editor improvements (behavior only — same textarea + preview layout)
 
 - **Sanitized preview.** Rendered Markdown now goes through DOMPurify
