@@ -55,7 +55,21 @@ body { font-family: var(--font-body); }
 [data-density='compact'] .tag-input-row { margin-bottom: 7px; }
 [data-density='compact'] .field { margin-bottom: 9px; }
 [data-density='compact'] .modal__body { padding-top: 13px; padding-bottom: 13px; }
-[data-density='compact'] .modal__footer { padding-top: 10px; padding-bottom: 10px; }
+[data-density='compact'] 
+.all-files-preview-body {
+  max-height: 75vh;
+  overflow-y: auto;
+}
+.all-files-preview-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.all-files-preview-list .note-card {
+  cursor: default;
+}
+
+.modal__footer { padding-top: 10px; padding-bottom: 10px; }
 [data-density='compact'] .btn { padding-top: 5px; padding-bottom: 5px; }
 [data-density='compact'] .sync-banner { padding-top: 5px; padding-bottom: 5px; }
 
