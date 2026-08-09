@@ -94,11 +94,11 @@ function parseMarkdown(raw) {
  * import (spec §3.7/§6.2) — one code path, so the two stay in sync
  * automatically instead of risking drift between two hand-rolled folder
  * rebuilders. Folder identity comes from each note's `folder:`
- * front-matter field (human-readable, exact names) when present;
- * otherwise it falls back to the physical directory the file was found
- * in (for files added by hand, with no front-matter).
+ * front-matter/metadata field (human-readable, exact names) when
+ * present; otherwise it falls back to the physical directory the file
+ * was found in (for files added by hand, with no such field).
  *
- * @param {Array<{relDir: string[], filename: string, raw: string, sourcePath?: string, sourceSha?: string}>} files
+ * @param {Array<{relDir: string[], filename: string, raw: string, sourcePath?: string, sourceSha?: string, kind?: 'markdown'|'quill'}>} files
  * @returns {{notes: object[], folders: object[]}}
  */
 export function reconstructFromMarkdownFiles(files) {
@@ -115,13 +115,43 @@ export function reconstructFromMarkdownFiles(files) {
 
   const notes = [];
   for (const file of files) {
-    const { meta, content } = parseMarkdown(file.raw);
+    let meta, content, editorType;
+
+    if (file.kind === 'quill') {
+      // .quill.json is a plain JSON object (not front-matter+markdown):
+      // { title, folder, tags, pinned, created, updated, editorType, delta }.
+      // The Delta is re-serialized as-is into `content` (FR-63: never
+      // converted to Markdown for sync/local storage).
+      let parsed;
+      try {
+        parsed = JSON.parse(file.raw);
+      } catch {
+        parsed = {};
+      }
+      meta = {
+        title: parsed.title,
+        folder: parsed.folder,
+        tags: parsed.tags,
+        pinned: parsed.pinned,
+        created: parsed.created,
+        updated: parsed.updated,
+      };
+      content = JSON.stringify(parsed.delta || { ops: [] });
+      editorType = 'quill';
+    } else {
+      const parsedMd = parseMarkdown(file.raw);
+      meta = parsedMd.meta;
+      content = parsedMd.content;
+      editorType = 'markdown';
+    }
+
     const segments = meta.folder ? meta.folder.split('/').filter(Boolean) : (file.relDir || []);
     const folderId = ensureFolder(segments);
 
     notes.push({
-      title: meta.title || file.filename.replace(/\.md$/, ''),
+      title: meta.title || file.filename.replace(/\.(quill\.json|md)$/, ''),
       content,
+      editorType,
       tags: meta.tags || [],
       pinned: !!meta.pinned,
       folderId,
@@ -168,6 +198,16 @@ export class GitHubSync {
     }
   }
 
+  async _createBlob(content) {
+    const blobRes = await fetch(`${API}/repos/${this.owner}/${this.repo}/git/blobs`, {
+      method: 'POST',
+      headers: { ...this.headers(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, encoding: 'utf-8' }),
+    });
+    if (!blobRes.ok) throw new Error(`Blob create failed: ${await this._err(blobRes)}`);
+    return blobRes.json();
+  }
+
   /**
    * Cheap check for "has anything changed on GitHub" — the date of the
    * most recent commit that touched basePath, without pulling any file
@@ -194,7 +234,7 @@ export class GitHubSync {
    * every githubPath this client has ever seen for this repo, including
    * for notes since deleted — so stale files can be identified.
    */
-  async saveNotes(notes, folders, { commitMessage, previousPaths = new Set() } = {}) {
+  async saveNotes(notes, folders, { commitMessage, previousPaths = new Set(), renderQuillHtml } = {}) {
     const branchRes = await fetch(`${API}/repos/${this.owner}/${this.repo}`, {
       headers: this.headers(),
     });
@@ -217,37 +257,93 @@ export class GitHubSync {
     const commitData = await commitRes.json();
     const baseTreeSha = commitData.tree.sha;
 
+    // Quill snapshots live in a separate top-level directory, sibling to
+    // basePath — this is what makes FR-66 (pull ignores notes-html/) true
+    // by construction: pull only ever lists contents under basePath.
+    const HTML_BASE = 'notes-html';
+
     // 1. Create a blob per note, and track the set of paths this push writes.
     const treeEntries = [];
     const newPaths = new Set();
+    let htmlSnapshotsWritten = 0;
+
     for (const note of notes) {
-      const path = `${this.basePath}/${folderPath(folders, note.folderId)}`
-        .replace(/\/+$/, '')
-        .concat(`/${slugify(note.title)}-${note.id.slice(0, 8)}.md`)
-        .replace(/^\/+/, '');
-      const content = noteToMarkdown(note, folders);
-      const blobRes = await fetch(
-        `${API}/repos/${this.owner}/${this.repo}/git/blobs`,
-        {
-          method: 'POST',
-          headers: { ...this.headers(), 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content, encoding: 'utf-8' }),
+      const dirPath = `${this.basePath}/${folderPath(folders, note.folderId)}`.replace(/\/+$/, '').replace(/^\/+/, '');
+      const slug = `${slugify(note.title)}-${note.id.slice(0, 8)}`;
+
+      if (note.editorType === 'quill') {
+        // Source of truth: the Delta itself, never converted (FR-63).
+        const quillPath = `${dirPath}/${slug}.quill.json`;
+        let delta;
+        try {
+          delta = JSON.parse(note.content || '{"ops":[]}');
+        } catch {
+          delta = { ops: [] };
         }
-      );
-      if (!blobRes.ok) throw new Error(`Blob create failed: ${await this._err(blobRes)}`);
-      const blob = await blobRes.json();
-      treeEntries.push({ path, mode: '100644', type: 'blob', sha: blob.sha });
-      newPaths.add(path);
-      note.githubPath = path;
-      note.githubSha = blob.sha;
+        const quillFileContent = JSON.stringify(
+          {
+            title: note.title || 'Untitled',
+            folder: folderDisplayPath(folders, note.folderId),
+            tags: note.tags || [],
+            pinned: !!note.pinned,
+            created: note.createdAt,
+            updated: note.updatedAt,
+            editorType: 'quill',
+            delta,
+          },
+          null,
+          2
+        );
+        const quillBlob = await this._createBlob(quillFileContent);
+        treeEntries.push({ path: quillPath, mode: '100644', type: 'blob', sha: quillBlob.sha });
+        newPaths.add(quillPath);
+        note.githubPath = quillPath;
+        note.githubSha = quillBlob.sha;
+
+        // Read-only HTML snapshot, only regenerated if content actually
+        // changed since the last successful sync (FR-65). Rendering
+        // itself needs a live Quill instance, which this module doesn't
+        // have — the caller supplies a renderQuillHtml(note) callback.
+        const htmlPath = `${HTML_BASE}/${folderPath(folders, note.folderId)}`.replace(/\/+$/, '').replace(/^\/+/, '') + `/${slug}.html`;
+        const needsHtmlUpdate =
+          !note.githubHtmlSha ||
+          !note.lastHtmlSyncedAt ||
+          new Date(note.updatedAt) > new Date(note.lastHtmlSyncedAt);
+
+        if (needsHtmlUpdate && typeof renderQuillHtml === 'function') {
+          const html = renderQuillHtml(note);
+          const htmlBlob = await this._createBlob(html);
+          treeEntries.push({ path: htmlPath, mode: '100644', type: 'blob', sha: htmlBlob.sha });
+          note.githubHtmlPath = htmlPath;
+          note.githubHtmlSha = htmlBlob.sha;
+          note.lastHtmlSyncedAt = nowISO();
+          htmlSnapshotsWritten++;
+        }
+        // Either way (updated or unchanged), this path is "current" —
+        // mark it so the stale-deletion pass below doesn't remove an
+        // HTML snapshot that just wasn't regenerated this round.
+        newPaths.add(htmlPath);
+      } else {
+        const path = `${dirPath}/${slug}.md`;
+        const content = noteToMarkdown(note, folders);
+        const blob = await this._createBlob(content);
+        treeEntries.push({ path, mode: '100644', type: 'blob', sha: blob.sha });
+        newPaths.add(path);
+        note.githubPath = path;
+        note.githubSha = blob.sha;
+      }
     }
 
     // 1b. Delete any previously-synced path that isn't being written this
-    // time — covers locally-deleted notes and renames (old slug/path).
-    // Only touch paths under our own basePath, as a safety guard.
+    // time — covers locally-deleted notes, renames, and (FR-67) a Quill
+    // note's stale .quill.json/.html pair. Restricted to our own two
+    // directories as a safety guard against touching unrelated repo files.
     let deletedCount = 0;
     for (const oldPath of previousPaths) {
-      if (!oldPath || !oldPath.startsWith(this.basePath + '/')) continue;
+      if (!oldPath) continue;
+      const underBasePath = oldPath.startsWith(this.basePath + '/');
+      const underHtmlBase = oldPath.startsWith(HTML_BASE + '/');
+      if (!underBasePath && !underHtmlBase) continue;
       if (!newPaths.has(oldPath)) {
         treeEntries.push({ path: oldPath, mode: '100644', type: 'blob', sha: null });
         deletedCount++;
@@ -295,6 +391,7 @@ export class GitHubSync {
       commitDate: newCommit.committer?.date || newCommit.author?.date || new Date().toISOString(),
       notesUpdated: notes.length,
       notesDeleted: deletedCount,
+      htmlSnapshotsWritten,
     };
   }
 
@@ -302,10 +399,14 @@ export class GitHubSync {
    * Pull all .md files under basePath and parse them back into notes,
    * also reconstructing the folder hierarchy so pulled notes land back
    * in the right folder instead of unfiled. Folder identity comes from
-   * each note's `folder:` front-matter field (human-readable, exact
-   * names) when present; for files that predate that field, or were
-   * added to the repo by hand, it falls back to the physical directory
-   * path the file was found in.
+   * each note's `folder:` front-matter/metadata field (human-readable,
+   * exact names) when present; for files that predate that field, or
+   * were added to the repo by hand, it falls back to the physical
+   * directory path the file was found in.
+   *
+   * Only lists contents under basePath — notes-html/ is a sibling
+   * directory, so it is never traversed here at all (FR-66/68: the HTML
+   * snapshot is write-only and never treated as authoritative).
    */
   async pullNotes() {
     const res = await fetch(
@@ -326,14 +427,15 @@ export class GitHubSync {
       const rel = file.path.startsWith(this.basePath + '/') ? file.path.slice(this.basePath.length + 1) : file.path;
       const segs = rel.split('/');
       const filename = segs.pop();
-      fileInputs.push({ relDir: segs, filename, raw, sourcePath: file.path, sourceSha: fileData.sha });
+      const kind = filename.endsWith('.quill.json') ? 'quill' : 'markdown';
+      fileInputs.push({ relDir: segs, filename, raw, sourcePath: file.path, sourceSha: fileData.sha, kind });
     }
     return reconstructFromMarkdownFiles(fileInputs);
   }
 
   async _collectMarkdownFiles(entries, acc = []) {
     for (const entry of entries) {
-      if (entry.type === 'file' && entry.name.endsWith('.md')) {
+      if (entry.type === 'file' && (entry.name.endsWith('.md') || entry.name.endsWith('.quill.json'))) {
         acc.push(entry);
       } else if (entry.type === 'dir') {
         const res = await fetch(entry.url, { headers: this.headers() });

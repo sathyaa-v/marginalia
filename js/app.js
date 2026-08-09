@@ -903,13 +903,21 @@ async function pushToGitHub(cfg) {
   try {
     const sync = new GitHubSync(cfg);
     const notes = activeNotes();
-    // Every githubPath this client has ever seen for this repo — including
-    // for notes since soft-deleted — so the push can also delete stale
-    // files instead of only ever adding/updating (a true mirror push).
+    // Every path (both the note file itself AND, for Quill notes, its
+    // notes-html/*.html snapshot) this client has ever seen for this
+    // repo — including for notes since soft-deleted — so the push can
+    // also delete stale files instead of only ever adding/updating.
     const allKnownNotes = await db.getAll('notes');
-    const previousPaths = new Set(allKnownNotes.filter((n) => n.githubPath).map((n) => n.githubPath));
+    const previousPaths = new Set();
+    allKnownNotes.forEach((n) => {
+      if (n.githubPath) previousPaths.add(n.githubPath);
+      if (n.githubHtmlPath) previousPaths.add(n.githubHtmlPath);
+    });
 
-    const result = await sync.saveNotes(notes, state.folders, { previousPaths });
+    const result = await sync.saveNotes(notes, state.folders, {
+      previousPaths,
+      renderQuillHtml: (note) => renderDeltaToHtml(note.content),
+    });
     await db.bulkPut('notes', notes);
 
     const deletedNotes = allKnownNotes.filter((n) => n.deleted && n.githubPath && !notes.some((x) => x.id === n.id));
@@ -919,9 +927,10 @@ async function pushToGitHub(cfg) {
 
     setSyncMeta(cfg, { lastSyncedAt: nowISO(), lastSyncedRemoteAt: result.commitDate });
 
+    const htmlNote = result.htmlSnapshotsWritten ? `, wrote ${result.htmlSnapshotsWritten} HTML snapshot(s)` : '';
     return {
       ok: true,
-      message: `Pushed ${result.notesUpdated} note(s)${result.notesDeleted ? `, removed ${result.notesDeleted} stale file(s)` : ''}.`,
+      message: `Pushed ${result.notesUpdated} note(s)${result.notesDeleted ? `, removed ${result.notesDeleted} stale file(s)` : ''}${htmlNote}.`,
     };
   } catch (err) {
     return { ok: false, message: err.message };
