@@ -540,6 +540,9 @@ a { color: var(--accent-2); }
   flex: 1;
   overflow-y: auto;
   padding: 28px 40px 60px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .title-input {
@@ -576,6 +579,7 @@ a { color: var(--accent-2); }
   display: grid;
   grid-template-columns: 1fr;
   gap: 24px;
+  flex-shrink: 0;
 }
 .content-area.split { grid-template-columns: 1fr 1fr; }
 
@@ -674,14 +678,14 @@ a { color: var(--accent-2); }
    Quill editor (FR-56/58) — theme the stock "snow" toolbar/editor to
    match the app's tokens instead of leaving Quill's default white/black.
 --------------------------------------------------------------------- */
-.quill-editor { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.quill-editor { flex: 1; display: flex; flex-direction: column; min-height: 400px; }
 .quill-editor .ql-toolbar.ql-snow {
   border: none;
   border-bottom: 1px solid var(--line);
   padding: 10px 40px;
   background: var(--surface);
 }
-.quill-editor .ql-container.ql-snow { border: none; }
+.quill-editor .ql-container.ql-snow { border: none; flex: 1; overflow-y: auto; }
 .quill-editor .ql-editor {
   font-family: var(--font-body);
   font-size: calc(15px * var(--font-scale));
