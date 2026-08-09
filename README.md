@@ -107,22 +107,12 @@ matches the requirements doc's explicit scope call).
   picker, Quill-by-default, CDN loading, Delta storage, correct editor
   auto-loading. Also wired: Quill's built-in syntax highlighting via the
   shared highlight.js instance (FR-59), search indexing against Quill's
-  extracted plain text instead of raw Delta JSON (FR-60), skim-view
-  rendering of Quill notes via Quill's own renderer (FR-61), Markdown
-  ZIP / single-note export converting Quill notes to Markdown at export
-  time only (FR-62), and full GitHub sync (FR-63–FR-68): pushing a Quill
-  note commits its Delta as `.quill.json` (source of truth, verified via
-  an actual push→pull round trip in testing — content, tags, pin state,
-  and folder nesting all survive intact) *and* a companion read-only
-  `notes-html/*.html` snapshot rendered through Quill's own renderer, so
-  the note is human-readable if you browse the repo on GitHub directly.
-  The snapshot only regenerates when the note actually changed since the
-  last sync, and both files get cleaned up together when a note is
-  deleted or its GitHub sync path changes.
-- **Known limitation:** pull never reads `notes-html/` back (by design —
-  it's write-only, sourced fresh from `.quill.json` every time), so after
-  a pull, the next push will regenerate every Quill note's HTML snapshot
-  once, even for notes that didn't actually change — a minor inefficiency,
+  extracted plain text instead of raw Delta JSON (FR-60), preview rendering
+  of Quill notes via Quill's own renderer (FR-61), Markdown ZIP / single-note
+  export converting Quill notes to Markdown at export time only (FR-62), and
+  full GitHub sync (FR-63–FR-68): pushing a Quill note commits its Delta as
+  `.quill.json` (source of truth). **Generated Quill `.html` files are not
+  synchronized or included in SHA comparison.**
   not a correctness issue.
 
 Full detail in `NOTES-APP-REQUIREMENTS.md` §3.2.1.
@@ -219,22 +209,24 @@ or pulls last wins.
 
 ### Automatic sync check on load
 
-Once a PAT is configured, every time the app loads it makes one lightweight
-API call (the latest commit touching the notes path — no file contents)
-and compares it against a **sync baseline** recorded locally the last time
-this browser actually pushed or pulled this specific repo — not against
-your notes' own edit timestamps. (An earlier version compared "when was
-this note last edited" directly against "when was the latest commit,"
-which are two different clocks — a commit is always at least as new as
-the edit it contains, so that comparison falsely claimed GitHub was newer
-right after a clean pull. Fixed by tracking what was actually synced.)
+Once a PAT is configured, the app calculates Git blob-compatible SHA-1
+hashes for every local sync source and compares them with the repository
+manifest. Quill-generated `.html` files are excluded completely. The
+comparison uses a stored per-file sync baseline so a file that was just
+pushed is recognized as synchronized instead of immediately being offered
+for pull again.
 
-If GitHub has changed since your last sync, or you've edited locally
-since then, a banner appears at the top with **Push** and **Pull**
-buttons (whichever direction looks right is highlighted; if both sides
-changed, neither is emphasized). A bad token, being offline, or a rate
-limit just fails silently here — real errors still surface when you use
-the GitHub sync modal directly.
+If only local files differ, the banner offers **Push**. If only GitHub
+files differ, it offers **Pull**. If both sides changed from the last
+common baseline, the conflict dialog shows two file lists: **Local
+changes** with a **Push** button and **GitHub changes** with a **Pull**
+button. The dialog displays filenames only; SHA values are kept internal.
+GitHub remains the authoritative source unless the user explicitly chooses
+to push local changes.
+
+The **Preview** button beside **+ New** replaces the note list in-place
+with rendered previews for all active notes. Clicking it again restores the
+normal note list; no popup is used.
 
 ## Share on Wi-Fi (Phase 3, included)
 
@@ -291,3 +283,8 @@ NOTES-APP-REQUIREMENTS.md   full requirements spec and roadmap
 ```
 
 No package.json, no build tooling — edit the files and refresh.
+
+
+## Startup responsiveness fix
+
+The latest sync/preview build no longer blocks the initial page render on IndexedDB. The application shell is rendered and wired first, local notes are loaded asynchronously, and GitHub SHA comparison remains deferred until the page is interactive. IndexedDB/storage errors are handled without leaving the page stuck on a blank or unresponsive screen. The service-worker cache version was also bumped so browsers do not continue serving the previous JavaScript bundle after an update.
