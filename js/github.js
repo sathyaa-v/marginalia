@@ -164,6 +164,51 @@ export function reconstructFromMarkdownFiles(files) {
   return { notes, folders: [...foldersByPath.values()] };
 }
 
+
+async function gitBlobSha(content) {
+  const bytes = new TextEncoder().encode(content);
+  const header = new TextEncoder().encode(`blob ${bytes.length}\0`);
+  const data = new Uint8Array(header.length + bytes.length);
+  data.set(header);
+  data.set(bytes, header.length);
+  const digest = await crypto.subtle.digest('SHA-1', data);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export async function buildSyncFileManifest(notes, folders, { renderQuillHtml, basePath = 'notes' } = {}) {
+  const files = [];
+  for (const note of notes) {
+    const dirPath = `${thisFolderPath(folders, note.folderId)}`;
+    const slug = `${thisSlugify(note.title)}-${note.id.slice(0, 8)}`;
+    const base = `${basePath}/${dirPath}`.replace(/\/+$/, '').replace(/^\/+/, '');
+    if (note.editorType === 'quill') {
+      let delta;
+      try { delta = JSON.parse(note.content || '{"ops":[]}'); } catch { delta = { ops: [] }; }
+      const content = JSON.stringify({
+        title: note.title || 'Untitled', folder: folderDisplayPath(folders, note.folderId),
+        tags: note.tags || [], pinned: !!note.pinned, created: note.createdAt,
+        updated: note.updatedAt, editorType: 'quill', delta,
+      }, null, 2);
+      // Quill HTML snapshots are generated UI artifacts, not sync sources.
+      files.push({ note, path: note.githubPath || `${base}/${slug}.quill.json`, content, kind: 'quill' });
+    } else {
+      files.push({ note, path: note.githubPath || `${base}/${slug}.md`, content: noteToMarkdown(note, folders), kind: 'markdown' });
+    }
+  }
+  for (const file of files) file.sha = await gitBlobSha(file.content);
+  return files;
+}
+
+function thisSlugify(title) {
+  return (title || 'untitled').toLowerCase().trim().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').slice(0, 60) || 'untitled';
+}
+function thisFolderPath(folders, folderId) {
+  const parts = [];
+  let current = folderId ? folders.find((f) => f.id === folderId) : null;
+  while (current) { parts.unshift(thisSlugify(current.name)); current = current.parentId ? folders.find((f) => f.id === current.parentId) : null; }
+  return parts.join('/');
+}
+
 export class GitHubSync {
   constructor({ token, owner, repo, basePath = 'notes' }) {
     this.token = token;
@@ -226,6 +271,37 @@ export class GitHubSync {
     return c.commit?.committer?.date || c.commit?.author?.date || null;
   }
 
+  async getRemoteFileManifest({ timeoutMs = 12000 } = {}) {
+    // The initial sync check is best-effort and must not leave the page
+    // waiting forever on a slow/offline GitHub connection.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const request = (url, options = {}) => fetch(url, { ...options, signal: controller.signal });
+    try {
+      const branchRes = await request(`${API}/repos/${this.owner}/${this.repo}`, { headers: this.headers() });
+    if (!branchRes.ok) throw new Error(`Repo lookup failed: ${await this._err(branchRes)}`);
+    const repoData = await branchRes.json();
+    const branch = repoData.default_branch;
+    const refRes = await request(`${API}/repos/${this.owner}/${this.repo}/git/ref/heads/${branch}`, { headers: this.headers() });
+    if (!refRes.ok) throw new Error(`Ref lookup failed: ${await this._err(refRes)}`);
+    const refData = await refRes.json();
+    const treeRes = await request(`${API}/repos/${this.owner}/${this.repo}/git/trees/${refData.object.sha}?recursive=1`, { headers: this.headers() });
+    if (!treeRes.ok) throw new Error(`Tree lookup failed: ${await this._err(treeRes)}`);
+    const tree = await treeRes.json();
+    const map = new Map();
+    (tree.tree || []).forEach((entry) => {
+      if (entry.type !== 'blob') return;
+      if (entry.path.startsWith(this.basePath + '/') && (entry.path.endsWith('.md') || entry.path.endsWith('.quill.json'))) map.set(entry.path, entry.sha);
+    });
+      return map;
+    } catch (err) {
+      if (err?.name === 'AbortError') throw new Error('GitHub sync check timed out; the page is still available.');
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /**
    * Atomic multi-file commit via the Git Data API. This is a MIRROR push:
    * any previously-synced path that no longer corresponds to a currently
@@ -257,93 +333,44 @@ export class GitHubSync {
     const commitData = await commitRes.json();
     const baseTreeSha = commitData.tree.sha;
 
-    // Quill snapshots live in a separate top-level directory, sibling to
-    // basePath — this is what makes FR-66 (pull ignores notes-html/) true
-    // by construction: pull only ever lists contents under basePath.
-    const HTML_BASE = 'notes-html';
-
-    // 1. Create a blob per note, and track the set of paths this push writes.
+    // The sync tree contains only Markdown and Quill source files under
+    // basePath. Generated HTML is never added to or compared by sync.
+  
+    // 1. Build local file contents and compare Git blob hashes with the repo.
+    // Only changed blobs are uploaded; unchanged files are reused by SHA.
     const treeEntries = [];
     const newPaths = new Set();
-    let htmlSnapshotsWritten = 0;
+    let notesUpdated = 0;
+    const remoteManifest = await this.getRemoteFileManifest();
+    const syncFiles = await buildSyncFileManifest(notes, folders, { renderQuillHtml, basePath: this.basePath });
 
-    for (const note of notes) {
-      const dirPath = `${this.basePath}/${folderPath(folders, note.folderId)}`.replace(/\/+$/, '').replace(/^\/+/, '');
-      const slug = `${slugify(note.title)}-${note.id.slice(0, 8)}`;
-
-      if (note.editorType === 'quill') {
-        // Source of truth: the Delta itself, never converted (FR-63).
-        const quillPath = `${dirPath}/${slug}.quill.json`;
-        let delta;
-        try {
-          delta = JSON.parse(note.content || '{"ops":[]}');
-        } catch {
-          delta = { ops: [] };
-        }
-        const quillFileContent = JSON.stringify(
-          {
-            title: note.title || 'Untitled',
-            folder: folderDisplayPath(folders, note.folderId),
-            tags: note.tags || [],
-            pinned: !!note.pinned,
-            created: note.createdAt,
-            updated: note.updatedAt,
-            editorType: 'quill',
-            delta,
-          },
-          null,
-          2
-        );
-        const quillBlob = await this._createBlob(quillFileContent);
-        treeEntries.push({ path: quillPath, mode: '100644', type: 'blob', sha: quillBlob.sha });
-        newPaths.add(quillPath);
-        note.githubPath = quillPath;
-        note.githubSha = quillBlob.sha;
-
-        // Read-only HTML snapshot, only regenerated if content actually
-        // changed since the last successful sync (FR-65). Rendering
-        // itself needs a live Quill instance, which this module doesn't
-        // have — the caller supplies a renderQuillHtml(note) callback.
-        const htmlPath = `${HTML_BASE}/${folderPath(folders, note.folderId)}`.replace(/\/+$/, '').replace(/^\/+/, '') + `/${slug}.html`;
-        const needsHtmlUpdate =
-          !note.githubHtmlSha ||
-          !note.lastHtmlSyncedAt ||
-          new Date(note.updatedAt) > new Date(note.lastHtmlSyncedAt);
-
-        if (needsHtmlUpdate && typeof renderQuillHtml === 'function') {
-          const html = renderQuillHtml(note);
-          const htmlBlob = await this._createBlob(html);
-          treeEntries.push({ path: htmlPath, mode: '100644', type: 'blob', sha: htmlBlob.sha });
-          note.githubHtmlPath = htmlPath;
-          note.githubHtmlSha = htmlBlob.sha;
-          note.lastHtmlSyncedAt = nowISO();
-          htmlSnapshotsWritten++;
-        }
-        // Either way (updated or unchanged), this path is "current" —
-        // mark it so the stale-deletion pass below doesn't remove an
-        // HTML snapshot that just wasn't regenerated this round.
-        newPaths.add(htmlPath);
+    for (const file of syncFiles) {
+      const remoteSha = remoteManifest.get(file.path);
+      if (remoteSha === file.sha) {
+        treeEntries.push({ path: file.path, mode: '100644', type: 'blob', sha: remoteSha });
       } else {
-        const path = `${dirPath}/${slug}.md`;
-        const content = noteToMarkdown(note, folders);
-        const blob = await this._createBlob(content);
-        treeEntries.push({ path, mode: '100644', type: 'blob', sha: blob.sha });
-        newPaths.add(path);
-        note.githubPath = path;
-        note.githubSha = blob.sha;
+        const blob = await this._createBlob(file.content);
+        treeEntries.push({ path: file.path, mode: '100644', type: 'blob', sha: blob.sha });
+        notesUpdated++;
+      }
+      newPaths.add(file.path);
+      if (file.kind === 'quill') {
+        file.note.githubPath = file.path;
+        file.note.githubSha = file.sha;
+      } else if (file.kind === 'markdown') {
+        file.note.githubPath = file.path;
+        file.note.githubSha = file.sha;
       }
     }
 
     // 1b. Delete any previously-synced path that isn't being written this
-    // time — covers locally-deleted notes, renames, and (FR-67) a Quill
-    // note's stale .quill.json/.html pair. Restricted to our own two
-    // directories as a safety guard against touching unrelated repo files.
+    // time — covers locally-deleted notes and renames. Restricted to the
+    // configured notes directory as a safety guard against unrelated files.
     let deletedCount = 0;
     for (const oldPath of previousPaths) {
       if (!oldPath) continue;
       const underBasePath = oldPath.startsWith(this.basePath + '/');
-      const underHtmlBase = oldPath.startsWith(HTML_BASE + '/');
-      if (!underBasePath && !underHtmlBase) continue;
+      if (!underBasePath) continue;
       if (!newPaths.has(oldPath)) {
         treeEntries.push({ path: oldPath, mode: '100644', type: 'blob', sha: null });
         deletedCount++;
@@ -389,9 +416,8 @@ export class GitHubSync {
     return {
       commitSha: newCommit.sha,
       commitDate: newCommit.committer?.date || newCommit.author?.date || new Date().toISOString(),
-      notesUpdated: notes.length,
+      notesUpdated,
       notesDeleted: deletedCount,
-      htmlSnapshotsWritten,
     };
   }
 
@@ -404,9 +430,8 @@ export class GitHubSync {
    * were added to the repo by hand, it falls back to the physical
    * directory path the file was found in.
    *
-   * Only lists contents under basePath — notes-html/ is a sibling
-   * directory, so it is never traversed here at all (FR-66/68: the HTML
-   * snapshot is write-only and never treated as authoritative).
+   * Only lists supported source files under basePath. Generated HTML
+   * files are intentionally ignored.
    */
   async pullNotes() {
     const res = await fetch(

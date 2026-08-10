@@ -1,6 +1,6 @@
 import { db, uuid, nowISO } from './db.js';
 import { searchNotes } from './search.js';
-import { GitHubSync, noteToMarkdown, folderDisplayPath, reconstructFromMarkdownFiles } from './github.js';
+import { GitHubSync, noteToMarkdown, folderDisplayPath, reconstructFromMarkdownFiles, buildSyncFileManifest } from './github.js';
 import { ShareSession } from './webrtc.js';
 import {
   createEmptyDeltaJson,
@@ -36,14 +36,15 @@ const state = {
   selectedNoteId: null,
   query: '',
   previewOn: false,
+  previewAll: false,
   tocOn: localStorage.getItem('tocOn') !== 'false',
-  skimMode: false,   // desktop toggle: note list shows full rendered previews instead of snippets
   theme: localStorage.getItem('theme') || 'system',
   palette: localStorage.getItem('palette') || 'default',
   fontSize: localStorage.getItem('fontSize') || 'medium',
   fontFamily: localStorage.getItem('fontFamily') || 'plex',
   density: localStorage.getItem('density') || 'comfortable',
-  mobileTab: 'list',
+  mobileTab: 'sidebar',
+  listView: localStorage.getItem('listView') || 'grid',
 };
 
 let saveTimer = null;
@@ -58,17 +59,45 @@ async function boot() {
   applyFontSize();
   applyFontFamily();
   applyDensity();
-  await requestPersistence();
-  state.notes = await db.getAll('notes');
-  state.folders = await db.getAll('folders');
+
+  // IMPORTANT: never wait for IndexedDB before painting the application.
+  // IndexedDB can be temporarily blocked by another tab, a pending upgrade,
+  // private-mode restrictions, or a browser storage prompt. Waiting here made
+  // the whole page appear hung on first load.
   wireGlobalEvents();
+  applyMobileTab();
   renderAll();
   registerServiceWorker();
   window.addEventListener('online', updateOnlineStatus);
   window.addEventListener('offline', updateOnlineStatus);
   updateOnlineStatus();
-  maybeShowExportReminder();
-  checkGitHubSyncStatus();
+
+  // Load local data after the shell is interactive. If storage fails, keep the
+  // UI usable and show a non-blocking error instead of leaving a blank page.
+  try {
+    await Promise.all([
+      db.getAll('notes').then((notes) => { state.notes = notes; }),
+      db.getAll('folders').then((folders) => { state.folders = folders; }),
+    ]);
+    renderAll();
+    maybeShowExportReminder();
+  } catch (err) {
+    console.error('Failed to load local notes:', err);
+    toast('Could not load local notes. The page is still available; please reload if needed.', true);
+  }
+
+  // Storage persistence is best-effort and never blocks startup.
+  requestPersistence();
+
+  // GitHub comparison is intentionally deferred until after the first paint
+  // and after local data has loaded. A repository/tree request can never block
+  // the editor or note list.
+  const startSyncCheck = () => checkGitHubSyncStatus().catch((err) => console.warn('GitHub sync check failed:', err));
+  if ('requestIdleCallback' in window) {
+    window.requestIdleCallback(startSyncCheck, { timeout: 1500 });
+  } else {
+    setTimeout(startSyncCheck, 800);
+  }
 }
 
 async function requestPersistence() {
@@ -212,17 +241,34 @@ function renderTagCloud() {
 }
 
 function renderNoteList() {
+  const root = document.getElementById('note-list');
+  const previewButton = document.getElementById('btn-preview-all');
+
+  // Skim/preview mode always reads best as a single stacked column, so grid
+  // layout is only applied for the normal (non-preview) list.
+  root.classList.toggle('grid-view', state.listView === 'grid' && !state.previewAll);
+  const viewToggleBtn = document.getElementById('btn-list-view-toggle');
+  if (viewToggleBtn) {
+    viewToggleBtn.textContent = state.listView === 'grid' ? '☰' : '⊞';
+    viewToggleBtn.title = state.listView === 'grid' ? 'Switch to list view' : 'Switch to grid view';
+  }
+
+  if (state.previewAll) {
+    const notes = activeNotes().slice().sort((a, b) => (a.title || 'Untitled').localeCompare(b.title || 'Untitled'));
+    document.getElementById('list-title').textContent = 'Preview';
+    previewButton.textContent = '▤ Notes';
+    previewButton.title = 'Return to note list';
+    previewButton.classList.add('active');
+    renderNoteCardsInto('note-list', notes.map((note) => ({ note, snippet: '' })), true);
+    return;
+  }
   const results = visibleNotes();
   const label = viewLabel();
   document.getElementById('list-title').textContent = label;
-  const skimTitleEl = document.getElementById('skim-list-title');
-  if (skimTitleEl) skimTitleEl.textContent = label;
-
-  renderNoteCardsInto('note-list', results, state.skimMode);
-  // The dedicated mobile skim tab is only rendered while it's actually
-  // visible — full-markdown rendering every note on every list refresh
-  // (e.g. on each debounced autosave) isn't worth paying for when hidden.
-  if (state.mobileTab === 'skim') renderNoteCardsInto('skim-list', results, true);
+  previewButton.textContent = '▤ Preview';
+  previewButton.title = 'Preview the content of all files';
+  previewButton.classList.remove('active');
+  renderNoteCardsInto('note-list', results, false);
 }
 
 function renderNoteCardsInto(containerId, results, skim) {
@@ -360,6 +406,7 @@ function renderEditor() {
   const previewEl = document.getElementById('note-preview');
   const previewBtn = document.getElementById('btn-preview');
   const syntaxBtn = document.getElementById('btn-syntax-help');
+  const quillToolbar = quillContainer.querySelector('.ql-toolbar');
 
   if (isQuill) {
     // Quill IS the rendered view — no separate Markdown-preview toggle
@@ -368,6 +415,8 @@ function renderEditor() {
     previewBtn.style.display = 'none';
     syntaxBtn.style.display = 'none';
     quillContainer.style.display = 'flex';
+    quillContainer.classList.remove('quill-editor--hidden');
+    if (quillToolbar) quillToolbar.style.display = '';
 
     const quill = ensureQuillEditor();
     setQuillDelta(quill, note.content);
@@ -375,6 +424,8 @@ function renderEditor() {
     document.getElementById('quill-toc').style.display = state.tocOn ? '' : 'none';
   } else {
     quillContainer.style.display = 'none';
+    quillContainer.classList.add('quill-editor--hidden');
+    if (quillToolbar) quillToolbar.style.display = 'none';
     if (quillInstance) quillInstance.root.blur();
     contentArea.style.display = 'grid';
     previewBtn.style.display = '';
@@ -539,6 +590,8 @@ function slugifyHeading(text) {
 // ---------------------------------------------------------------------
 function setView(view) {
   state.view = view;
+  state.mobileTab = 'list';
+  applyMobileTab();
   renderAll();
 }
 
@@ -670,6 +723,20 @@ function onSearchInput(e) {
   searchDebounce = setTimeout(() => {
     state.query = val;
     renderNoteList();
+  }, 150);
+}
+
+// Home screen (Folders/Tags) search bar — searches across all notes and
+// advances to the Notes list, mirroring Apple Notes' "type to search" flow.
+let homeSearchDebounce = null;
+function onHomeSearchInput(e) {
+  clearTimeout(homeSearchDebounce);
+  const val = e.target.value;
+  homeSearchDebounce = setTimeout(() => {
+    state.query = val;
+    const listSearchInput = document.getElementById('search-input');
+    if (listSearchInput) listSearchInput.value = val;
+    setView('all');
   }, 150);
 }
 
@@ -1058,15 +1125,13 @@ async function pushToGitHub(cfg) {
   try {
     const sync = new GitHubSync(cfg);
     const notes = activeNotes();
-    // Every path (both the note file itself AND, for Quill notes, its
-    // notes-html/*.html snapshot) this client has ever seen for this
-    // repo — including for notes since soft-deleted — so the push can
-    // also delete stale files instead of only ever adding/updating.
+    // Every source note path this client has ever synced with this repo,
+    // including soft-deleted notes, so renamed/deleted source files can be
+    // removed from the repo instead of only ever adding/updating.
     const allKnownNotes = await db.getAll('notes');
     const previousPaths = new Set();
     allKnownNotes.forEach((n) => {
       if (n.githubPath) previousPaths.add(n.githubPath);
-      if (n.githubHtmlPath) previousPaths.add(n.githubHtmlPath);
     });
 
     const result = await sync.saveNotes(notes, state.folders, {
@@ -1080,12 +1145,12 @@ async function pushToGitHub(cfg) {
     state.notes = await db.getAll('notes');
     renderAll();
 
-    setSyncMeta(cfg, { lastSyncedAt: nowISO(), lastSyncedRemoteAt: result.commitDate });
+    const syncedManifest = await buildSyncFileManifest(activeNotes(), state.folders, { basePath: cfg.basePath || 'notes' });
+    setSyncMeta(cfg, { lastSyncedAt: nowISO(), lastSyncedRemoteAt: result.commitDate, fileShas: Object.fromEntries(syncedManifest.map((f) => [f.path, f.sha])) });
 
-    const htmlNote = result.htmlSnapshotsWritten ? `, wrote ${result.htmlSnapshotsWritten} HTML snapshot(s)` : '';
     return {
       ok: true,
-      message: `Pushed ${result.notesUpdated} note(s)${result.notesDeleted ? `, removed ${result.notesDeleted} stale file(s)` : ''}${htmlNote}.`,
+      message: `Pushed ${result.notesUpdated} note(s)${result.notesDeleted ? `, removed ${result.notesDeleted} stale file(s)` : ''}.`,
     };
   } catch (err) {
     return { ok: false, message: err.message };
@@ -1126,7 +1191,8 @@ async function pullAndResetFromGitHub(cfg) {
 
     let remoteAt = null;
     try { remoteAt = await sync.getLatestRemoteChangeTime(); } catch { /* non-fatal, fall back below */ }
-    setSyncMeta(cfg, { lastSyncedAt: nowISO(), lastSyncedRemoteAt: remoteAt || nowISO() });
+    const remoteManifest = await sync.getRemoteFileManifest();
+    setSyncMeta(cfg, { lastSyncedAt: nowISO(), lastSyncedRemoteAt: remoteAt || nowISO(), fileShas: Object.fromEntries(remoteManifest.entries()) });
 
     return {
       ok: true,
@@ -1146,81 +1212,129 @@ function localLatestUpdatedAt() {
 // ---------------------------------------------------------------------
 // Homepage sync-status banner — checked once, automatically, on load.
 // ---------------------------------------------------------------------
+async function getGitHubSyncDiff(cfg) {
+  const sync = new GitHubSync(cfg);
+  const allNotes = await db.getAll('notes');
+  const localNotes = allNotes.filter((n) => !n.deleted);
+  const localFiles = await buildSyncFileManifest(localNotes, state.folders, { basePath: cfg.basePath || 'notes' });
+  const localMap = new Map(localFiles.map((f) => [f.path, { sha: f.sha, note: f.note, kind: f.kind }]));
+  const remoteMap = await sync.getRemoteFileManifest();
+  const saved = getSyncMeta(cfg);
+  const baseline = new Map(Object.entries(saved.fileShas || {}));
+  const paths = new Set([...localMap.keys(), ...remoteMap.keys(), ...baseline.keys()]);
+  const files = [];
+  let localChanged = false;
+  let remoteChanged = false;
+  let conflict = false;
+
+  for (const path of [...paths].sort()) {
+    const localSha = localMap.get(path)?.sha || null;
+    const remoteSha = remoteMap.get(path) || null;
+    if (localSha === remoteSha) continue;
+    const baseSha = baseline.get(path) || null;
+    let lChanged;
+    let rChanged;
+    if (baseSha) {
+      lChanged = localSha !== baseSha;
+      rChanged = remoteSha !== baseSha;
+    } else {
+      // No common baseline: treat a remote/local presence difference as a
+      // one-sided change. If both exist with different SHA, GitHub is the
+      // authoritative side until the user explicitly chooses Push.
+      lChanged = !!localSha && !remoteSha;
+      rChanged = !!remoteSha && !localSha;
+      if (localSha && remoteSha) rChanged = true;
+    }
+    const isConflict = !!(lChanged && rChanged);
+    localChanged ||= lChanged;
+    remoteChanged ||= rChanged;
+    conflict ||= isConflict;
+    files.push({ path, localSha, remoteSha, baseSha, localChanged: lChanged, remoteChanged: rChanged, conflict: isConflict });
+  }
+  return { files, localChanged, remoteChanged, conflict };
+}
+
 async function checkGitHubSyncStatus() {
   const cfg = getSavedGitHubConfig();
-  if (!cfg) return; // no PAT configured yet — nothing to check
+  if (!cfg) return;
   try {
-    const sync = new GitHubSync(cfg);
-    const remoteLatest = await sync.getLatestRemoteChangeTime();
-    const localLatest = localLatestUpdatedAt();
-    const meta = getSyncMeta(cfg);
-    showSyncBannerIfNeeded(localLatest, remoteLatest, meta);
+    const diff = await getGitHubSyncDiff(cfg);
+    pendingSyncDiff = diff;
+    showSyncDiffStatus(diff);
+    // Keep the initial page interactive. The banner opens the full conflict
+    // comparison only when the user explicitly asks to sync.
+    if (diff.conflict && diff.files.length) {
+      const text = document.getElementById('sync-banner-text');
+      if (text) text.textContent += ' Review the file list before choosing a direction.';
+    }
   } catch {
-    // Silent — a bad token, offline state, or rate limit shouldn't block
-    // the homepage. The GitHub sync modal will surface real errors when
-    // the person actually tries to use it.
+    // Silent on load; the sync modal remains available for explicit checks.
   }
 }
 
-function showSyncBannerIfNeeded(localLatest, remoteLatest, meta) {
+function showSyncDiffStatus(diff) {
   const banner = document.getElementById('sync-banner');
   const text = document.getElementById('sync-banner-text');
-  const TOLERANCE_MS = 3000; // avoid false positives from clock/rounding noise
-
-  const localMs = localLatest ? new Date(localLatest).getTime() : 0;
-  const remoteMs = remoteLatest ? new Date(remoteLatest).getTime() : 0;
-
-  // No baseline yet for this repo (never synced from this browser) — fall
-  // back to a coarse direct comparison, since there's nothing better to
-  // compare against.
-  if (!meta.lastSyncedAt && !meta.lastSyncedRemoteAt) {
-    if (!localLatest && !remoteLatest) { banner.style.display = 'none'; return; }
-    if (Math.abs(localMs - remoteMs) <= TOLERANCE_MS) { banner.style.display = 'none'; return; }
-
-    let message, suggested;
-    if (!remoteLatest) { message = 'These notes haven\u2019t been pushed to GitHub yet.'; suggested = 'push'; }
-    else if (!localLatest) { message = 'GitHub has notes that aren\u2019t on this device.'; suggested = 'pull'; }
-    else if (localMs > remoteMs) { message = `Local notes are newer than GitHub (updated ${relativeTime(localLatest)}).`; suggested = 'push'; }
-    else { message = `GitHub has newer changes than this device (updated ${relativeTime(remoteLatest)}).`; suggested = 'pull'; }
-
-    text.textContent = message;
-    banner.style.display = 'flex';
-    document.getElementById('sync-banner-push').classList.toggle('btn-primary', suggested === 'push');
-    document.getElementById('sync-banner-pull').classList.toggle('btn-primary', suggested === 'pull');
-    return;
-  }
-
-  // Normal case: compare each side against its own baseline from the last
-  // sync, not against each other. "Did GitHub change since I last synced"
-  // and "did I edit locally since I last synced" are independent
-  // questions, each with its own clock.
-  const lastSyncedAtMs = meta.lastSyncedAt ? new Date(meta.lastSyncedAt).getTime() : 0;
-  const lastSyncedRemoteMs = meta.lastSyncedRemoteAt ? new Date(meta.lastSyncedRemoteAt).getTime() : 0;
-
-  const remoteChanged = remoteLatest && (remoteMs - lastSyncedRemoteMs > TOLERANCE_MS);
-  const localChanged = localLatest && (localMs - lastSyncedAtMs > TOLERANCE_MS);
-
-  if (!remoteChanged && !localChanged) {
-    banner.style.display = 'none';
-    return;
-  }
-
-  let message, suggested;
-  if (localChanged && remoteChanged) {
-    message = 'Both this device and GitHub have changed since your last sync.';
-    suggested = null;
-  } else if (localChanged) {
-    message = `Local notes have changed since your last sync (updated ${relativeTime(localLatest)}).`;
-    suggested = 'push';
+  if (!diff.localChanged && !diff.remoteChanged) { banner.style.display = 'none'; return; }
+  if (diff.conflict) {
+    text.textContent = `Local and GitHub versions differ in ${diff.files.length} file(s). Choose Pull or Push.`;
+  } else if (diff.remoteChanged) {
+    text.textContent = `GitHub has ${diff.files.length} file(s) that differ from this device.`;
   } else {
-    message = `GitHub has changed since your last sync (updated ${relativeTime(remoteLatest)}).`;
-    suggested = 'pull';
+    text.textContent = `This device has ${diff.files.length} file(s) that differ from GitHub.`;
   }
-
-  text.textContent = message;
   banner.style.display = 'flex';
-  document.getElementById('sync-banner-push').classList.toggle('btn-primary', suggested === 'push');
-  document.getElementById('sync-banner-pull').classList.toggle('btn-primary', suggested === 'pull');
+  document.getElementById('sync-banner-push').classList.toggle('btn-primary', diff.localChanged && !diff.remoteChanged);
+  document.getElementById('sync-banner-pull').classList.toggle('btn-primary', diff.remoteChanged && !diff.localChanged);
+}
+
+function showSyncConflictModal(cfg, diff) {
+  const localFiles = diff.files.filter((f) => f.localChanged);
+  const remoteFiles = diff.files.filter((f) => f.remoteChanged);
+  const names = (files) => [...new Map(files.map((f) => [f.path, f.path.split('/').pop()])).values()];
+  const localRows = names(localFiles).map((name) => `<li>${escapeHtml(name)}</li>`).join('') || '<li class="field-hint">No local changes</li>';
+  const remoteRows = names(remoteFiles).map((name) => `<li>${escapeHtml(name)}</li>`).join('') || '<li class="field-hint">No GitHub changes</li>';
+  renderModal(`
+    <div class="modal__header"><span class="modal__title">Sync conflict</span><button class="icon-btn" id="modal-close" aria-label="Close">✕</button></div>
+    <div class="modal__body">
+      <div class="honesty-note"><strong>GitHub is treated as the final source of truth.</strong> Choose which set of changes to synchronize.</div>
+      <div class="sync-conflict-groups">
+        <section class="sync-conflict-group">
+          <div class="sync-conflict-group__header"><strong>Local changes</strong><button class="btn btn-primary" id="sync-conflict-push">Push</button></div>
+          <ul class="sync-conflict-files">${localRows}</ul>
+        </section>
+        <section class="sync-conflict-group">
+          <div class="sync-conflict-group__header"><strong>GitHub changes</strong><button class="btn" id="sync-conflict-pull">Pull</button></div>
+          <ul class="sync-conflict-files">${remoteRows}</ul>
+        </section>
+      </div>
+    </div>
+    <div class="modal__footer"><button class="btn" id="sync-conflict-cancel">Cancel</button></div>`);
+  document.getElementById('modal-close').addEventListener('click', closeModal);
+  document.getElementById('sync-conflict-cancel').addEventListener('click', closeModal);
+  document.getElementById('sync-conflict-pull').addEventListener('click', async () => { closeModal(); await runSyncAction('pull', cfg, true); });
+  document.getElementById('sync-conflict-push').addEventListener('click', async () => { closeModal(); await runSyncAction('push', cfg, true); });
+}
+
+async function runSyncAction(action, cfg, force = false) {
+  if (syncBusy) return;
+  try {
+    const fresh = await getGitHubSyncDiff(cfg);
+    if (fresh.conflict && !force) {
+      pendingSyncDiff = fresh;
+      showSyncConflictModal(cfg, fresh);
+      return;
+    }
+    if (action === 'push' && !fresh.localChanged) { toast('No local file hash differences to push.'); return; }
+    if (action === 'pull' && !fresh.remoteChanged) { toast('No GitHub file hash differences to pull.'); return; }
+    setSyncBusy(true, action === 'push' ? 'Pushing…' : 'Pulling…');
+    const result = action === 'push' ? await pushToGitHub(cfg) : await pullAndResetFromGitHub(cfg);
+    toast(result.message, !result.ok);
+    if (result.ok) hideSyncBanner();
+    pendingSyncDiff = null;
+  } finally {
+    setSyncBusy(false);
+  }
 }
 
 function hideSyncBanner() {
@@ -1228,6 +1342,7 @@ function hideSyncBanner() {
 }
 
 let syncBusy = false;
+let pendingSyncDiff = null;
 
 function setSyncBusy(busy, operation = '') {
   syncBusy = busy;
@@ -1248,18 +1363,14 @@ function setSyncBusy(busy, operation = '') {
 function wireSyncBanner() {
   document.getElementById('sync-banner-push').addEventListener('click', async () => {
     const cfg = getSavedGitHubConfig();
-    if (!cfg || syncBusy) return;
-    setSyncBusy(true, 'Pushing…');
-    try { const result = await pushToGitHub(cfg); toast(result.message, !result.ok); if (result.ok) hideSyncBanner(); }
-    finally { setSyncBusy(false); }
+    if (!cfg) return;
+    await runSyncAction('push', cfg);
   });
   document.getElementById('sync-banner-pull').addEventListener('click', async () => {
     const cfg = getSavedGitHubConfig();
-    if (!cfg || syncBusy) return;
+    if (!cfg) return;
     if (!confirm('This replaces all local notes with what’s in GitHub. Continue?')) return;
-    setSyncBusy(true, 'Pulling…');
-    try { const result = await pullAndResetFromGitHub(cfg); toast(result.message, !result.ok); if (result.ok) hideSyncBanner(); }
-    finally { setSyncBusy(false); }
+    await runSyncAction('pull', cfg);
   });
   document.getElementById('sync-banner-dismiss').addEventListener('click', () => { if (!syncBusy) hideSyncBanner(); });
 }
@@ -1476,50 +1587,29 @@ function openGitHubModal() {
 
   document.getElementById('gh-save').addEventListener('click', async () => {
     const cfg = config();
-    if (!cfg.token || !cfg.owner || !cfg.repo) {
-      setStatus('Token, owner, and repo are required.', 'error');
-      return;
-    }
+    if (!cfg.token || !cfg.owner || !cfg.repo) { setStatus('Token, owner, and repo are required.', 'error'); return; }
     persistConfig(cfg);
     refreshRepoLink(cfg);
-    setSyncBusy(true, 'Pushing…');
-    setStatus('Pushing to GitHub…');
-    try {
-      const result = await pushToGitHub(cfg);
-      setStatus(result.message, result.ok ? 'success' : 'error');
-      if (result.ok) { toast('Pushed to GitHub'); hideSyncBanner(); }
-    } finally { setSyncBusy(false); }
+    await runSyncAction('push', cfg);
   });
 
   let pullConfirmed = false;
   const pullBtn = document.getElementById('gh-pull');
   pullBtn.addEventListener('click', async () => {
     const cfg = config();
-    if (!cfg.token || !cfg.owner || !cfg.repo) {
-      setStatus('Token, owner, and repo are required.', 'error');
-      return;
-    }
+    if (!cfg.token || !cfg.owner || !cfg.repo) { setStatus('Token, owner, and repo are required.', 'error'); return; }
     persistConfig(cfg);
-
     if (!pullConfirmed) {
       pullConfirmed = true;
       pullBtn.textContent = 'Confirm: replace local notes';
-      setStatus('This replaces ALL local notes with what\u2019s in the repo. Anything local you haven\u2019t pushed will be lost. Click again to confirm.', 'error');
+      setStatus('The repo is authoritative. Click again to compare hashes and pull any GitHub changes.', 'error');
       return;
     }
-
-    setSyncBusy(true, 'Pulling…');
-    setStatus('Pulling from GitHub…');
-    try {
-      const result = await pullAndResetFromGitHub(cfg);
-      setStatus(result.message, result.ok ? 'success' : 'error');
-      if (result.ok) { toast('Local notes reset from GitHub'); hideSyncBanner(); }
-    } finally {
-      setSyncBusy(false);
-      pullConfirmed = false;
-      pullBtn.textContent = 'Pull & reset local notes';
-    }
+    pullConfirmed = false;
+    pullBtn.textContent = 'Pull & reset local notes';
+    await runSyncAction('pull', cfg);
   });
+
 }
 
 // ---------------------------------------------------------------------
@@ -1796,12 +1886,8 @@ function applyMobileTab() {
   document.getElementById('pane-sidebar').classList.toggle('mobile-visible', state.mobileTab === 'sidebar');
   document.getElementById('pane-list').classList.toggle('mobile-visible', state.mobileTab === 'list');
   document.getElementById('pane-editor').classList.toggle('mobile-visible', state.mobileTab === 'editor');
-  document.getElementById('pane-skim').classList.toggle('mobile-visible', state.mobileTab === 'skim');
-  document.querySelectorAll('.mobile-tabs button').forEach((b) => {
-    b.classList.toggle('active', b.dataset.tab === state.mobileTab);
-  });
-  if (state.mobileTab === 'skim') renderNoteList(); // skim-list render is gated on being visible
 }
+
 
 // ---------------------------------------------------------------------
 // Event wiring
@@ -1813,6 +1899,7 @@ function wireGlobalEvents() {
 
   document.getElementById('btn-add-folder').addEventListener('click', addFolder);
   document.getElementById('btn-new-note').addEventListener('click', () => createNote());
+  document.getElementById('btn-preview-all').addEventListener('click', () => { state.previewAll = !state.previewAll; renderNoteList(); });
   document.getElementById('btn-new-note-caret').addEventListener('click', (e) => {
     e.stopPropagation();
     const menu = document.getElementById('new-note-menu');
@@ -1827,11 +1914,6 @@ function wireGlobalEvents() {
   document.addEventListener('click', (e) => {
     const menu = document.getElementById('new-note-menu');
     if (!menu.hidden && !e.target.closest('.new-note-group')) menu.hidden = true;
-  });
-  document.getElementById('btn-skim-toggle').addEventListener('click', () => {
-    state.skimMode = !state.skimMode;
-    document.getElementById('btn-skim-toggle').classList.toggle('active', state.skimMode);
-    renderNoteList();
   });
   document.getElementById('search-input').addEventListener('input', onSearchInput);
 
@@ -1907,12 +1989,22 @@ function wireGlobalEvents() {
   window.addEventListener('beforeunload', () => { if (shareSession) shareSession.close(); });
   wireSyncBanner();
 
-  document.querySelectorAll('.mobile-tabs button').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      state.mobileTab = btn.dataset.tab;
-      applyMobileTab();
-    });
+  document.getElementById('btn-back-to-folders').addEventListener('click', () => {
+    state.mobileTab = 'sidebar';
+    applyMobileTab();
   });
+  document.getElementById('btn-back-to-list').addEventListener('click', () => {
+    state.mobileTab = 'list';
+    applyMobileTab();
+    renderNoteList();
+  });
+  document.getElementById('btn-list-view-toggle').addEventListener('click', () => {
+    state.listView = state.listView === 'grid' ? 'list' : 'grid';
+    localStorage.setItem('listView', state.listView);
+    renderNoteList();
+  });
+  document.getElementById('home-search-input').addEventListener('input', onHomeSearchInput);
+  document.getElementById('btn-new-note-home').addEventListener('click', () => createNote());
 
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     if (state.theme === 'system') applyTheme();
