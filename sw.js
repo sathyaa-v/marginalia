@@ -1,6 +1,6 @@
 // sw.js — caches the app shell so the notebook works fully offline (FR-25/27).
 // Bump CACHE_NAME whenever shipped files change to invalidate old caches.
-const CACHE_NAME = 'notes-app-shell-v13';
+const CACHE_NAME = 'notes-app-shell-v10';
 
 const SHELL_FILES = [
   './',
@@ -18,19 +18,8 @@ const SHELL_FILES = [
 ];
 
 self.addEventListener('install', (event) => {
-  // cache.addAll() rejects — and aborts the ENTIRE install — the moment any
-  // single file 404s. That previously meant one missing shell asset (e.g. an
-  // icon) silently prevented the service worker from ever installing, so
-  // offline support quietly never turned on. Cache each file independently
-  // instead, so one bad entry can't take the rest down with it.
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) =>
-      Promise.all(
-        SHELL_FILES.map((url) =>
-          cache.add(url).catch((err) => console.warn('[sw] precache skipped:', url, err))
-        )
-      )
-    ).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_FILES)).then(() => self.skipWaiting())
   );
 });
 
@@ -50,24 +39,22 @@ self.addEventListener('fetch', (event) => {
   // leaves the device implicitly).
   if (req.url.includes('api.github.com') || req.url.includes('peerjs.com')) return;
 
-  // App shell (own origin): network-first with a HARD TIMEOUT.
-  // A service worker must never make a page refresh wait indefinitely for
-  // a network response. This was causing the app to appear frozen when the
-  // browser was online but the server/CDN request stalled. Use the cached
-  // shell immediately after a short timeout, then refresh the cache when
-  // the network succeeds.
+  // App shell (own origin): NETWORK-FIRST. When online, always fetch the
+  // current file and refresh the cache from it; only fall back to the
+  // cached copy if the fetch fails (i.e. actually offline). This is the
+  // opposite of the cache-first/stale-while-revalidate approach used
+  // below for third-party assets — that approach is wrong for files we
+  // ship ourselves, because it can serve an already-open tab a stale
+  // app.js/styles.css for a full load even after CACHE_NAME is bumped,
+  // since the background revalidation only benefits the *next* load.
   if (req.method === 'GET' && new URL(req.url).origin === self.location.origin) {
-    const cached = caches.match(req);
-    const network = fetch(req.url, { cache: 'no-store' }).then((res) => {
-      if (res.ok) caches.open(CACHE_NAME).then((c) => c.put(req, res.clone()));
-      return res;
-    });
-    const timeout = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('network timeout')), 2500)
-    );
-
     event.respondWith(
-      Promise.race([network, timeout]).catch(() => cached)
+      fetch(req.url, { cache: 'no-store' })
+        .then((res) => {
+          if (res.ok) caches.open(CACHE_NAME).then((c) => c.put(req, res.clone()));
+          return res;
+        })
+        .catch(() => caches.match(req))
     );
     return;
   }
