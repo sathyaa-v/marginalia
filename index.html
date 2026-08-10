@@ -44,69 +44,80 @@
 
   <!-- ============ SIDEBAR ============ -->
   <aside class="pane sidebar mobile-visible" id="pane-sidebar">
-    <div class="brand">
-      <span class="brand__mark" aria-hidden="true"></span>
-      <span class="brand__title">Marginalia</span>
-    </div>
-
-    <div class="sidebar-section">
-      <div class="sidebar-section__label">Library</div>
-      <button class="nav-item active" data-view="all">
-        <span>All notes</span><span class="nav-item__count" id="count-all">0</span>
-      </button>
-      <button class="nav-item" data-view="pinned">
-        <span>Pinned</span><span class="nav-item__count" id="count-pinned">0</span>
-      </button>
-      <button class="nav-item" data-view="archived">
-        <span>Archived</span><span class="nav-item__count" id="count-archived">0</span>
-      </button>
-    </div>
-
-    <div class="sidebar-section">
-      <div class="sidebar-section__label" style="display:flex; justify-content:space-between; align-items:center;">
-        <span>Folders</span>
-        <button class="folder-row__add" id="btn-add-folder" title="New folder" aria-label="New folder">+</button>
+    <div class="sidebar-scroll">
+      <div class="brand">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__title">Marginalia</span>
       </div>
-      <div class="folder-tree" id="folder-tree"></div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section__label">Library</div>
+        <button class="nav-item active" data-view="all">
+          <span>📄 All notes</span><span class="nav-item__count" id="count-all">0</span>
+        </button>
+        <button class="nav-item" data-view="pinned">
+          <span>📌 Pinned</span><span class="nav-item__count" id="count-pinned">0</span>
+        </button>
+        <button class="nav-item" data-view="archived">
+          <span>🗄 Archived</span><span class="nav-item__count" id="count-archived">0</span>
+        </button>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section__label" style="display:flex; justify-content:space-between; align-items:center;">
+          <span>Folders</span>
+          <button class="folder-row__add" id="btn-add-folder" title="New folder" aria-label="New folder">+</button>
+        </div>
+        <div class="folder-tree" id="folder-tree"></div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section__label">Tags</div>
+        <div id="tag-cloud"></div>
+      </div>
+
+      <div class="sidebar-footer">
+        <button class="text-btn" id="btn-github">
+          <span aria-hidden="true">⇅</span> GitHub sync
+        </button>
+        <button class="text-btn" id="btn-share">
+          <span aria-hidden="true">📡</span> Share on Wi-Fi
+        </button>
+        <button class="text-btn" id="btn-export">
+          <span aria-hidden="true">↓</span> Export notes (JSON)
+        </button>
+        <button class="text-btn" id="btn-import">
+          <span aria-hidden="true">↑</span> Import notes
+        </button>
+        <input type="file" id="import-file" accept=".json" hidden />
+        <button class="text-btn" id="btn-export-zip">
+          <span aria-hidden="true">🗂</span> Export as Markdown ZIP
+        </button>
+        <button class="text-btn" id="btn-import-zip">
+          <span aria-hidden="true">🗂</span> Import Markdown ZIP
+        </button>
+        <input type="file" id="import-zip-file" accept=".zip" hidden />
+        <button class="text-btn" id="btn-theme">
+          <span aria-hidden="true">🎨</span> <span id="theme-label">Theme</span>
+        </button>
+        <div class="text-btn" style="cursor:default;">
+          <span class="status-dot online" id="status-dot"></span>
+          <span id="status-label">Online</span>
+        </div>
+        <div class="text-btn" style="cursor:default; display:none;" id="peer-status-row">
+          <span class="status-dot" id="peer-status-dot"></span>
+          <span id="peer-status-label">No peer</span>
+        </div>
+      </div>
     </div>
 
-    <div class="sidebar-section">
-      <div class="sidebar-section__label">Tags</div>
-      <div id="tag-cloud"></div>
-    </div>
-
-    <div class="sidebar-footer">
-      <button class="text-btn" id="btn-github">
-        <span aria-hidden="true">⇅</span> GitHub sync
-      </button>
-      <button class="text-btn" id="btn-share">
-        <span aria-hidden="true">📡</span> Share on Wi-Fi
-      </button>
-      <button class="text-btn" id="btn-export">
-        <span aria-hidden="true">↓</span> Export notes (JSON)
-      </button>
-      <button class="text-btn" id="btn-import">
-        <span aria-hidden="true">↑</span> Import notes
-      </button>
-      <input type="file" id="import-file" accept=".json" hidden />
-      <button class="text-btn" id="btn-export-zip">
-        <span aria-hidden="true">🗂</span> Export as Markdown ZIP
-      </button>
-      <button class="text-btn" id="btn-import-zip">
-        <span aria-hidden="true">🗂</span> Import Markdown ZIP
-      </button>
-      <input type="file" id="import-zip-file" accept=".zip" hidden />
-      <button class="text-btn" id="btn-theme">
-        <span aria-hidden="true">🎨</span> <span id="theme-label">Theme</span>
-      </button>
-      <div class="text-btn" style="cursor:default;">
-        <span class="status-dot online" id="status-dot"></span>
-        <span id="status-label">Online</span>
+    <!-- Mobile-only: Apple-Notes-style bottom bar on the Folders/Tags home screen -->
+    <div class="sidebar-mobile-bar">
+      <div class="search-box">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="home-search-input" placeholder="Search notes…" aria-label="Search all notes" />
       </div>
-      <div class="text-btn" style="cursor:default; display:none;" id="peer-status-row">
-        <span class="status-dot" id="peer-status-dot"></span>
-        <span id="peer-status-label">No peer</span>
-      </div>
+      <button class="new-note-btn" id="btn-new-note-home" title="New note" aria-label="New note">+ New</button>
     </div>
   </aside>
 
@@ -118,9 +129,13 @@
         <input type="text" id="search-input" placeholder="Search notes…" aria-label="Search notes" />
       </div>
       <div class="list-header-row">
-        <span class="list-title" id="list-title">All notes</span>
+        <div style="display:flex; align-items:center; gap:6px; min-width:0;">
+          <button class="icon-btn mobile-back-btn" id="btn-back-to-folders" title="Back to Folders" aria-label="Back to Folders">‹</button>
+          <span class="list-title" id="list-title">All notes</span>
+        </div>
         <div style="display:flex; gap:6px;">
-          <button class="icon-btn" id="btn-skim-toggle" title="Skim view — show full formatting" aria-label="Toggle skim view">📖</button>
+          <button class="icon-btn" id="btn-list-view-toggle" title="Switch view">⊞</button>
+          <button class="new-note-btn" id="btn-preview-all" title="Preview the content of all files">▤ Preview</button>
           <div class="new-note-group">
             <button class="new-note-btn" id="btn-new-note">+ New</button>
             <button class="new-note-btn new-note-btn__caret" id="btn-new-note-caret" aria-label="Choose editor type" aria-haspopup="true">▾</button>
@@ -144,9 +159,10 @@
 
     <div id="editor-content" style="display:none; flex:1; min-height:0; display:flex; flex-direction:column;">
       <div class="editor-toolbar">
+        <button class="icon-btn mobile-back-btn" id="btn-back-to-list" title="Back to notes" aria-label="Back to notes">‹</button>
         <button class="icon-btn" id="btn-pin" title="Pin note" aria-label="Pin note">📌</button>
         <button class="icon-btn" id="btn-archive" title="Archive note" aria-label="Archive note">🗄</button>
-        <button class="icon-btn" id="btn-preview" title="Toggle preview" aria-label="Toggle preview">◧</button>
+        <button class="icon-btn" id="btn-preview" title="Toggle preview" aria-label="Toggle preview">👁</button>
         <button class="icon-btn" id="btn-syntax-help" title="Markdown syntax reference" aria-label="Markdown syntax reference">❓</button>
         <button class="icon-btn" id="btn-toc" title="Toggle automatic table of contents" aria-label="Toggle automatic table of contents">☷</button>
         <div class="editor-toolbar__spacer"></div>
@@ -170,22 +186,6 @@
       </div>
     </div>
   </section>
-
-  <!-- ============ SKIM (mobile dedicated tab) ============ -->
-  <section class="pane" id="pane-skim">
-    <div class="note-list-header">
-      <span class="list-title" id="skim-list-title">All notes</span>
-    </div>
-    <div class="note-list" id="skim-list"></div>
-  </section>
-
-  <!-- ============ MOBILE TABS ============ -->
-  <nav class="mobile-tabs">
-    <button data-tab="sidebar" class="active">📚<span>Library</span></button>
-    <button data-tab="list">📇<span>Notes</span></button>
-    <button data-tab="skim">📖<span>Skim</span></button>
-    <button data-tab="editor">✎<span>Write</span></button>
-  </nav>
 
 </div>
 
