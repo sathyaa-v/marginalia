@@ -288,3 +288,8 @@ No package.json, no build tooling — edit the files and refresh.
 ## Startup responsiveness fix
 
 The latest sync/preview build no longer blocks the initial page render on IndexedDB. The application shell is rendered and wired first, local notes are loaded asynchronously, and GitHub SHA comparison remains deferred until the page is interactive. IndexedDB/storage errors are handled without leaving the page stuck on a blank or unresponsive screen. The service-worker cache version was also bumped so browsers do not continue serving the previous JavaScript bundle after an update.
+
+## Refresh / startup reliability
+
+The service worker uses a short network timeout for same-origin application-shell requests. If a refresh cannot reach the server promptly, the previously cached application shell is used instead of allowing the page to remain stuck waiting for a network response.
+
