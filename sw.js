@@ -1,6 +1,6 @@
 // sw.js — caches the app shell so the notebook works fully offline (FR-25/27).
 // Bump CACHE_NAME whenever shipped files change to invalidate old caches.
-const CACHE_NAME = 'notes-app-shell-v12';
+const CACHE_NAME = 'notes-app-shell-v13';
 
 const SHELL_FILES = [
   './',
@@ -18,8 +18,19 @@ const SHELL_FILES = [
 ];
 
 self.addEventListener('install', (event) => {
+  // cache.addAll() rejects — and aborts the ENTIRE install — the moment any
+  // single file 404s. That previously meant one missing shell asset (e.g. an
+  // icon) silently prevented the service worker from ever installing, so
+  // offline support quietly never turned on. Cache each file independently
+  // instead, so one bad entry can't take the rest down with it.
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL_FILES)).then(() => self.skipWaiting())
+    caches.open(CACHE_NAME).then((cache) =>
+      Promise.all(
+        SHELL_FILES.map((url) =>
+          cache.add(url).catch((err) => console.warn('[sw] precache skipped:', url, err))
+        )
+      )
+    ).then(() => self.skipWaiting())
   );
 });
 
