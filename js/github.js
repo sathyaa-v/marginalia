@@ -361,7 +361,6 @@ export class GitHubSync {
         file.note.githubPath = file.path;
         file.note.githubSha = file.sha;
       }
-      }
     }
 
     // 1b. Delete any previously-synced path that isn't being written this
