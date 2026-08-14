@@ -678,6 +678,10 @@ async function deleteNote() {
   note.updatedAt = nowISO();
   await db.put('notes', note);
   state.selectedNoteId = null;
+  state.view = 'all';
+  state.previewAll = false;
+  state.mobileTab = 'list';
+  applyMobileTab();
   toast('Note deleted');
   renderAll();
 }
