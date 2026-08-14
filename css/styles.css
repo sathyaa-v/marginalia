@@ -153,6 +153,22 @@ body { font-family: var(--font-body); }
   --tag: #cfcfc8; --tag-bg: #262626; --danger: #e08172; --danger-bg: #3a2422;
 }
 
+/* Spider-Man — classic red/blue suit with black webbing and a
+   newsprint-white paper tone, playing off the card-catalog styling
+   already in the app. */
+[data-palette='spiderman'] {
+  --paper: #f5f0e6; --surface: #ffffff; --surface-raised: #ffffff;
+  --ink: #14141a; --ink-soft: #4a4a55; --ink-faint: #8c8c96; --line: #ddd3d1;
+  --accent: #e2262f; --accent-soft: #fbdbdc; --accent-2: #1b3a8c;
+  --tag: #0b0b0b; --tag-bg: #e7e7ea; --danger: #c41e28; --danger-bg: #f5dcdc;
+}
+[data-palette='spiderman'][data-theme='dark'] {
+  --paper: #0b0c10; --surface: #14161c; --surface-raised: #1a1c24;
+  --ink: #f2f0eb; --ink-soft: #a8a8b3; --ink-faint: #6c6c78; --line: #2a2a34;
+  --accent: #ff3b3f; --accent-soft: #3a1418; --accent-2: #5a7bef;
+  --tag: #d6d6de; --tag-bg: #23232e; --danger: #ff5257; --danger-bg: #3a1418;
+}
+
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 
