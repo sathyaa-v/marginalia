@@ -25,6 +25,7 @@ import {
   insertTable,
   wordStats,
 } from './editor-helpers.js';
+import { SpiderManMascot } from './spiderman-mascot.js';
 
 // ---------------------------------------------------------------------
 // State
@@ -49,6 +50,7 @@ const state = {
 
 let saveTimer = null;
 let shareSession = null; // active ShareSession, host or joiner (spec §3.9)
+let spidermanMascot = null; // active only under the Spider-Man palette, in the All notes list
 
 // ---------------------------------------------------------------------
 // Boot
@@ -66,6 +68,7 @@ async function boot() {
   // the whole page appear hung on first load.
   wireGlobalEvents();
   applyMobileTab();
+  initSpidermanMascot();
   renderAll();
   registerServiceWorker();
   window.addEventListener('online', updateOnlineStatus);
@@ -260,6 +263,7 @@ function renderNoteList() {
     previewButton.title = 'Return to note list';
     previewButton.classList.add('active');
     renderNoteCardsInto('note-list', notes.map((note) => ({ note, snippet: '' })), true);
+    if (spidermanMascot) spidermanMascot.refresh();
     return;
   }
   const results = visibleNotes();
@@ -269,6 +273,7 @@ function renderNoteList() {
   previewButton.title = 'Preview the content of all files';
   previewButton.classList.remove('active');
   renderNoteCardsInto('note-list', results, false);
+  if (spidermanMascot) spidermanMascot.refresh();
 }
 
 function renderNoteCardsInto(containerId, results, skim) {
@@ -749,6 +754,7 @@ const PALETTES = [
   { id: 'forest', label: 'Forest', accent: '#56773f', accent2: '#3f6b5e', tag: '#8a6a3d' },
   { id: 'rosewood', label: 'Rosewood', accent: '#9c4a4a', accent2: '#6f5a68', tag: '#b1663f' },
   { id: 'ink', label: 'Ink & Paper', accent: '#111111', accent2: '#555555', tag: '#333333' },
+  { id: 'spiderman', label: 'Spider-Man', accent: '#e2262f', accent2: '#1b3a8c', tag: '#0b0b0b' },
 ];
 
 const FONT_SIZES = [
@@ -770,6 +776,24 @@ function applyTheme() {
 function applyPalette() {
   document.body.setAttribute('data-palette', state.palette);
   updateThemeLabel();
+  if (spidermanMascot) spidermanMascot.refresh();
+}
+
+// ---------------------------------------------------------------------
+// Spider-Man mascot (cosmetic only — never touches note/folder state).
+// Lives inside #note-list and only shows itself while the Spider-Man
+// palette is active and the "All notes" list (not preview/skim) is
+// on screen, since that's the one view guaranteed to have a stable
+// list of .note-card elements to hop between.
+// ---------------------------------------------------------------------
+function initSpidermanMascot() {
+  const listEl = document.getElementById('note-list');
+  if (!listEl || typeof WebGLRenderingContext === 'undefined') return; // no WebGL, skip quietly
+  spidermanMascot = new SpiderManMascot({
+    scrollContainer: listEl,
+    itemSelector: '.note-card',
+    isEnabled: () => state.palette === 'spiderman' && state.view === 'all' && !state.previewAll,
+  });
 }
 
 function applyFontSize() {
