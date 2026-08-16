@@ -83,6 +83,9 @@
         <button class="text-btn" id="btn-share">
           <span aria-hidden="true">📡</span> Share on Wi-Fi
         </button>
+        <button class="text-btn" id="btn-graph-view">
+          <span aria-hidden="true">🕸</span> Graph view
+        </button>
         <button class="text-btn" id="btn-export">
           <span aria-hidden="true">↓</span> Export notes (JSON)
         </button>
@@ -183,6 +186,16 @@
         </div>
         <div class="quill-toc" id="quill-toc" style="display:none;"></div>
         <div class="quill-editor" id="quill-editor" style="display:none;"></div>
+        <div class="linked-notes" id="linked-notes" style="display:none;">
+          <div class="linked-notes__section" id="linked-notes-out" style="display:none;">
+            <div class="field-hint">Links to</div>
+            <div class="linked-notes__chips" id="linked-notes-out-chips"></div>
+          </div>
+          <div class="linked-notes__section" id="linked-notes-back" style="display:none;">
+            <div class="field-hint">Linked mentions</div>
+            <div class="linked-notes__chips" id="linked-notes-back-chips"></div>
+          </div>
+        </div>
       </div>
     </div>
   </section>
