@@ -366,6 +366,45 @@ a { color: var(--accent-2); }
 }
 .tag-pill.active { border-color: var(--tag); }
 
+/* ---------------------------------------------------------------------
+   Bidirectional links ([[Note Title]] wiki-links)
+--------------------------------------------------------------------- */
+.linked-notes {
+  flex-shrink: 0;
+  margin-top: 28px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.linked-notes__section .field-hint { margin-bottom: 7px; text-transform: uppercase; letter-spacing: 0.04em; }
+.linked-notes__chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.link-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 100px;
+  background: var(--tag-bg);
+  color: var(--ink);
+  font-size: calc(12px * var(--font-scale));
+  border: 1px solid transparent;
+  cursor: pointer;
+  max-width: 260px;
+}
+.link-chip:hover { border-color: var(--accent-2); color: var(--accent-2); }
+.link-chip__title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.link-chip--unresolved {
+  background: none;
+  border: 1px dashed var(--line);
+  color: var(--ink-faint);
+}
+.link-chip--unresolved:hover { border-color: var(--accent); color: var(--accent); }
+.link-chip--unresolved .link-chip__title::before { content: '+ '; }
+
 .sidebar-footer {
   margin-top: auto;
   padding-top: 14px;
@@ -853,6 +892,28 @@ a { color: var(--accent-2); }
 .modal__footer {
   padding: 14px 20px; border-top: 1px solid var(--line);
   display: flex; justify-content: flex-end; gap: 8px;
+}
+
+.modal--graph { max-width: 92vw; width: 1000px; }
+.modal--graph .modal__body { padding: 0; }
+.graph-canvas {
+  width: 100%;
+  height: 72vh;
+  min-height: 380px;
+  background: var(--paper);
+  position: relative;
+}
+.graph-canvas__empty {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--ink-faint); font-family: var(--font-mono); font-size: calc(13px * var(--font-scale));
+  text-align: center; padding: 20px;
+}
+.graph-canvas__hint {
+  position: absolute; left: 14px; bottom: 12px;
+  font-family: var(--font-mono); font-size: calc(11px * var(--font-scale));
+  color: var(--ink-faint); background: color-mix(in srgb, var(--surface-raised) 80%, transparent);
+  padding: 4px 9px; border-radius: 100px; pointer-events: none;
 }
 
 .field { margin-bottom: 14px; }
