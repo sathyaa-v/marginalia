@@ -26,6 +26,7 @@ import {
   wordStats,
 } from './editor-helpers.js';
 import { SpiderManMascot } from './spiderman-mascot.js';
+import { buildLinkIndex, parseWikiLinkTitles } from './wikilinks.js';
 
 // ---------------------------------------------------------------------
 // State
@@ -46,11 +47,13 @@ const state = {
   density: localStorage.getItem('density') || 'comfortable',
   mobileTab: 'sidebar',
   listView: localStorage.getItem('listView') || 'grid',
+  linkIndex: { forwardLinks: new Map(), backlinks: new Map(), titleToId: new Map() }, // [[wiki-links]] index, see wikilinks.js
 };
 
 let saveTimer = null;
 let shareSession = null; // active ShareSession, host or joiner (spec §3.9)
 let spidermanMascot = null; // active only under the Spider-Man palette, in the All notes list
+let graphViewInstance = null; // active 3D graph view (js/graph-view.js), disposed on modal close
 
 // ---------------------------------------------------------------------
 // Boot
@@ -82,6 +85,7 @@ async function boot() {
       db.getAll('notes').then((notes) => { state.notes = notes; }),
       db.getAll('folders').then((folders) => { state.folders = folders; }),
     ]);
+    rebuildLinkIndex();
     renderAll();
     maybeShowExportReminder();
   } catch (err) {
@@ -127,6 +131,18 @@ function activeNotes() {
 // against its extracted plain text, not the raw JSON.
 function getSearchableText(note) {
   return note.editorType === 'quill' ? extractQuillPlainText(note.content) : note.content;
+}
+
+// ---------------------------------------------------------------------
+// Bidirectional links ([[Note Title]] wiki-links) — FR-69/70
+// ---------------------------------------------------------------------
+// Rebuilt explicitly at every point state.notes changes in bulk (boot,
+// import, GitHub push/pull, shared-note import) and after any single
+// note's title/content is saved — not on every render, since parsing
+// every note's plain text on every keystroke-triggered render would be
+// wasteful for larger note collections.
+function rebuildLinkIndex() {
+  state.linkIndex = buildLinkIndex(activeNotes(), getSearchableText);
 }
 
 function visibleNotes() {
@@ -444,6 +460,8 @@ function renderEditor() {
     document.getElementById('content-area').classList.toggle('split', state.previewOn);
     previewEl.style.display = state.previewOn ? 'block' : 'none';
   }
+
+  renderLinksPanel(note);
 }
 
 // Defensive detection for the self-healing check above — a Quill Delta is
@@ -590,6 +608,85 @@ function slugifyHeading(text) {
     .slice(0, 60);
 }
 
+// Bidirectional [[wiki-link]] panel — outgoing links (resolved + not-yet-
+// created) and backlinks (notes that link here). Shared by both editor
+// types since it renders outside the Quill/Markdown-specific containers.
+function renderLinksPanel(note) {
+  const panel = document.getElementById('linked-notes');
+  const outSection = document.getElementById('linked-notes-out');
+  const backSection = document.getElementById('linked-notes-back');
+  const outChips = document.getElementById('linked-notes-out-chips');
+  const backChips = document.getElementById('linked-notes-back-chips');
+
+  const outgoing = state.linkIndex.forwardLinks.get(note.id) || [];
+  const backlinkIds = Array.from(state.linkIndex.backlinks.get(note.id) || []);
+  const backlinkNotes = backlinkIds
+    .map((id) => state.notes.find((n) => n.id === id))
+    .filter((n) => n && !n.deleted);
+
+  if (outgoing.length === 0 && backlinkNotes.length === 0) {
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = 'flex';
+
+  outSection.style.display = outgoing.length > 0 ? '' : 'none';
+  outChips.innerHTML = '';
+  outgoing.forEach((link) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    if (link.targetId) {
+      chip.className = 'link-chip';
+      chip.innerHTML = `<span class="link-chip__title">${escapeHtml(link.title)}</span>`;
+      chip.title = `Open "${link.title}"`;
+      chip.addEventListener('click', () => selectNote(link.targetId));
+    } else {
+      chip.className = 'link-chip link-chip--unresolved';
+      chip.innerHTML = `<span class="link-chip__title">${escapeHtml(link.title)}</span>`;
+      chip.title = `Create note "${link.title}"`;
+      chip.addEventListener('click', () => createLinkedNote(link.title));
+    }
+    outChips.appendChild(chip);
+  });
+
+  backSection.style.display = backlinkNotes.length > 0 ? '' : 'none';
+  backChips.innerHTML = '';
+  backlinkNotes.forEach((n) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'link-chip';
+    chip.innerHTML = `<span class="link-chip__title">${escapeHtml(n.title || 'Untitled')}</span>`;
+    chip.title = `Open "${n.title || 'Untitled'}"`;
+    chip.addEventListener('click', () => selectNote(n.id));
+    backChips.appendChild(chip);
+  });
+}
+
+// Creates a new note from an unresolved [[Title]] reference, matching
+// Obsidian-style "click to create the page it points to" behavior.
+async function createLinkedNote(title) {
+  const note = {
+    id: uuid(),
+    title,
+    editorType: 'markdown',
+    content: '',
+    folderId: null,
+    tags: [],
+    pinned: false,
+    archived: false,
+    deleted: false,
+    createdAt: nowISO(),
+    updatedAt: nowISO(),
+  };
+  state.notes.unshift(note);
+  await db.put('notes', note);
+  rebuildLinkIndex();
+  state.selectedNoteId = note.id;
+  state.mobileTab = 'editor';
+  applyMobileTab();
+  renderAll();
+}
+
 // ---------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------
@@ -624,6 +721,7 @@ async function createNote(editorType = 'quill') {
   };
   state.notes.unshift(note);
   await db.put('notes', note);
+  rebuildLinkIndex();
   state.selectedNoteId = note.id;
   state.mobileTab = 'editor';
   applyMobileTab();
@@ -638,6 +736,8 @@ function scheduleSave(note) {
   saveTimer = setTimeout(async () => {
     note.updatedAt = nowISO();
     await db.put('notes', note);
+    rebuildLinkIndex();
+    if (note.id === state.selectedNoteId) renderLinksPanel(note);
     label.textContent = 'Saved';
     renderNoteList();
     setTimeout(() => { if (label.textContent === 'Saved') label.textContent = ''; }, 1500);
@@ -677,6 +777,7 @@ async function deleteNote() {
   note.deleted = true;
   note.updatedAt = nowISO();
   await db.put('notes', note);
+  rebuildLinkIndex();
   state.selectedNoteId = null;
   state.view = 'all';
   state.previewAll = false;
@@ -1009,6 +1110,7 @@ async function importJSONFile(file) {
     await db.bulkPut('notes', notes);
     state.notes = await db.getAll('notes');
     state.folders = await db.getAll('folders');
+    rebuildLinkIndex();
     renderAll();
     toast(`Imported ${notes.length} note(s)`);
   } catch (err) {
@@ -1090,6 +1192,7 @@ async function importMarkdownZip(file) {
     await db.bulkPut('notes', toSave);
     state.notes = await db.getAll('notes');
     state.folders = await db.getAll('folders');
+    rebuildLinkIndex();
     renderAll();
     toast(`Imported ${toSave.length} note(s) into ${importedFolders.length} folder(s)`);
   } catch (err) {
@@ -1171,6 +1274,7 @@ async function pushToGitHub(cfg) {
     const deletedNotes = allKnownNotes.filter((n) => n.deleted && n.githubPath && !notes.some((x) => x.id === n.id));
     for (const dn of deletedNotes) await db.delete('notes', dn.id);
     state.notes = await db.getAll('notes');
+    rebuildLinkIndex();
     renderAll();
 
     const syncedManifest = await buildSyncFileManifest(activeNotes(), state.folders, { basePath: cfg.basePath || 'notes' });
@@ -1215,6 +1319,7 @@ async function pullAndResetFromGitHub(cfg) {
     state.notes = await db.getAll('notes');
     state.folders = await db.getAll('folders');
     state.selectedNoteId = null;
+    rebuildLinkIndex();
     renderAll();
 
     let remoteAt = null;
@@ -1662,6 +1767,70 @@ function setPeerStatus(connected, label) {
   text.textContent = label || (connected ? '1 peer connected' : 'No peer');
 }
 
+// ---------------------------------------------------------------------
+// 3D graph view — nodes are notes, edges are resolved [[wiki-links]].
+// ---------------------------------------------------------------------
+function onGraphViewResize() {
+  graphViewInstance?.resize();
+}
+
+async function openGraphModal() {
+  renderModal(`
+    <div class="modal__header">
+      <span class="modal__title">Graph view</span>
+      <button class="icon-btn" id="modal-close" aria-label="Close">✕</button>
+    </div>
+    <div class="modal__body">
+      <div class="graph-canvas" id="graph-canvas">
+        <div class="graph-canvas__empty" id="graph-canvas-empty" style="display:none;"></div>
+      </div>
+    </div>
+  `, 'modal--graph');
+  document.getElementById('modal-close').addEventListener('click', closeModal);
+
+  const notes = activeNotes();
+  const container = document.getElementById('graph-canvas');
+  const emptyEl = document.getElementById('graph-canvas-empty');
+
+  if (notes.length === 0) {
+    emptyEl.style.display = 'flex';
+    emptyEl.textContent = 'No notes yet — create a few and link them with [[Note Title]] to see the graph.';
+    return;
+  }
+
+  try {
+    const { createGraphView } = await import('./graph-view.js');
+    // If the modal was closed again before the (async) library finished loading.
+    if (!document.getElementById('graph-canvas')) return;
+
+    const style = getComputedStyle(document.body);
+    const colors = {
+      bg: style.getPropertyValue('--paper').trim() || '#f5f0e6',
+      node: style.getPropertyValue('--accent-2').trim() || '#1b3a8c',
+      nodeActive: style.getPropertyValue('--accent').trim() || '#e2262f',
+      link: style.getPropertyValue('--ink-faint').trim() || '#999',
+    };
+
+    graphViewInstance = await createGraphView(container, notes, state.linkIndex.forwardLinks, {
+      selectedId: state.selectedNoteId,
+      colors,
+      onNodeClick: (noteId) => {
+        closeModal();
+        selectNote(noteId);
+      },
+    });
+    window.addEventListener('resize', onGraphViewResize);
+
+    const hint = document.createElement('div');
+    hint.className = 'graph-canvas__hint';
+    hint.textContent = 'Drag to orbit · scroll to zoom · click a note to open it';
+    container.appendChild(hint);
+  } catch (err) {
+    emptyEl.style.display = 'flex';
+    emptyEl.textContent = err.message || 'Could not load the graph view.';
+  }
+}
+
 function openShareModal() {
   let tab = 'host';   // 'host' | 'join'
   let easyMode = true; // PeerJS vs manual SDP
@@ -1877,6 +2046,7 @@ function openShareModal() {
     };
     state.notes.unshift(note);
     await db.put('notes', note);
+    rebuildLinkIndex();
     renderAll();
     toast(`Imported "${note.title}" to your notes`);
   }
@@ -1885,16 +2055,21 @@ function openShareModal() {
 // ---------------------------------------------------------------------
 // Modal / toast helpers
 // ---------------------------------------------------------------------
-function renderModal(innerHtml) {
+function renderModal(innerHtml, extraClass) {
   const root = document.getElementById('modal-root');
-  root.innerHTML = `<div class="modal-overlay" id="modal-overlay"><div class="modal">${innerHtml}</div></div>`;
+  root.innerHTML = `<div class="modal-overlay" id="modal-overlay"><div class="modal${extraClass ? ' ' + extraClass : ''}">${innerHtml}</div></div>`;
   document.getElementById('modal-overlay').addEventListener('click', (e) => {
     if (e.target.id === 'modal-overlay') closeModal();
   });
 }
 function closeModal() {
-  document.getElementById('modal-root').innerHTML = '';
   if (shareSession) closeShareSession();
+  if (graphViewInstance) {
+    graphViewInstance.destroy();
+    graphViewInstance = null;
+    window.removeEventListener('resize', onGraphViewResize);
+  }
+  document.getElementById('modal-root').innerHTML = '';
 }
 
 function toast(msg, isError) {
@@ -2014,6 +2189,7 @@ function wireGlobalEvents() {
   });
   document.getElementById('btn-github').addEventListener('click', openGitHubModal);
   document.getElementById('btn-share').addEventListener('click', openShareModal);
+  document.getElementById('btn-graph-view').addEventListener('click', openGraphModal);
   window.addEventListener('beforeunload', () => { if (shareSession) shareSession.close(); });
   wireSyncBanner();
 
